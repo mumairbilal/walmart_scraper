@@ -8,6 +8,7 @@ import random
 import streamlit as st
 import requests
 import pandas as pd
+import netifaces
 from firecrawl import Firecrawl
 import firebase_admin
 from firebase_admin import credentials, firestore
@@ -283,32 +284,81 @@ class FirebaseFunctions:
 # Helper Functions
 # -------------------------------
 def get_mac_address():
-    """Get a stable, unique device ID for the machine"""
+    """Get the hardware MAC address of the device or a persistent unique ID."""
     try:
-        # Try to read from local file if it exists
+        # Try to read from the device ID file if it exists
         if os.path.exists(DEVICE_ID_FILE):
             with open(DEVICE_ID_FILE, "r") as f:
                 device_id = f.read().strip()
                 if device_id:
                     return device_id
-        
-        # Generate a new unique ID using uuid4 (not tied to hardware)
-        device_id = str(uuid.uuid4())
-        
-        # Save the new ID to make it static for this device
+
+        # Try to get the actual hardware MAC address
+        try:
+            # Get all network interfaces
+            interfaces = netifaces.interfaces()
+            for iface in interfaces:
+                # Skip loopback and virtual interfaces
+                if iface.startswith('lo') or 'virtual' in iface.lower():
+                    continue
+                # Get interface details
+                iface_data = netifaces.ifaddresses(iface)
+                # Check for MAC address (AF_LINK or AF_PACKET for Linux)
+                if netifaces.AF_LINK in iface_data:
+                    mac = iface_data[netifaces.AF_LINK][0].get('addr')
+                    if mac and mac != "00:00:00:00:00:00":
+                        # Clean and format the MAC address
+                        mac = mac.replace(':', '').replace('-', '').upper()
+                        # Save the MAC address to the device ID file
+                        try:
+                            with open(DEVICE_ID_FILE, "w") as f:
+                                f.write(mac)
+                            return mac
+                        except Exception as e:
+                            st.session_state.error_log.append(
+                                f"{datetime.datetime.now()}: Error saving MAC address to file: {str(e)}"
+                            )
+                            return mac  # Return MAC even if file save fails
+        except Exception as e:
+            st.session_state.error_log.append(
+                f"{datetime.datetime.now()}: Error retrieving hardware MAC address: {str(e)}"
+            )
+
+        # Fallback: Use uuid.getnode() to get a hardware-based node ID
+        try:
+            node_id = uuid.getnode()  # Returns an integer based on the MAC address
+            mac = f"{node_id:012X}"  # Convert to 12-character hex string (48-bit MAC)
+            # Save the node ID as a MAC address to the file
+            try:
+                with open(DEVICE_ID_FILE, "w") as f:
+                    f.write(mac)
+            except Exception as e:
+                st.session_state.error_log.append(
+                    f"{datetime.datetime.now()}: Error saving node ID to file: {str(e)}"
+                )
+            return mac
+        except Exception as e:
+            st.session_state.error_log.append(
+                f"{datetime.datetime.now()}: Error retrieving node ID: {str(e)}"
+            )
+
+        # Final fallback: Generate a UUID and save it
+        device_id = str(uuid.uuid4()).replace('-', '').upper()
         try:
             with open(DEVICE_ID_FILE, "w") as f:
                 f.write(device_id)
         except Exception as e:
-            st.session_state.error_log.append(f"{datetime.datetime.now()}: Error saving device ID: {str(e)}")
-            st.warning(f"Failed to save device ID: {e}. Device ID will be regenerated on next run.")
-        
+            st.session_state.error_log.append(
+                f"{datetime.datetime.now()}: Error saving fallback UUID to file: {str(e)}"
+            )
         return device_id
-    
+
     except Exception as e:
-        st.session_state.error_log.append(f"{datetime.datetime.now()}: Error in get_mac_address: {str(e)}")
-        # Fallback to generating a temporary ID if all else fails
-        return str(uuid.uuid4())
+        st.session_state.error_log.append(
+            f"{datetime.datetime.now()}: Fatal error in get_mac_address: {str(e)}"
+        )
+        # Ultimate fallback: Return a temporary UUID
+        return str(uuid.uuid4()).replace('-', '').upper()
 
 def check_license_eligibility(license_key, bot_name, mac_address):
     """Check if license is eligible with security checks"""

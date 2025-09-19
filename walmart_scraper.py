@@ -40,8 +40,8 @@ class FirebaseFunctions:
                 cred = credentials.Certificate(firebase_config)
             else:
                 cred = credentials.Certificate("umisoft-client-database-firebase-adminsdk.json")
-                firebase_admin.initialize_app(cred)
-                FirebaseFunctions._firestore_db = firestore.client()
+            firebase_admin.initialize_app(cred)
+        FirebaseFunctions._firestore_db = firestore.client()  # Ensure this is set after initialization
     
     @staticmethod
     def get_all_client_data():
@@ -1276,4 +1276,3 @@ if st.session_state.app_state == "scraping":
         Contact: <a href="mailto:support@umisoft.com" style="text-decoration: none;">support@umisoft.com</a> | © 2025 Umisoft Ltd. | Version 2.0
     </div>
     """, unsafe_allow_html=True)
-

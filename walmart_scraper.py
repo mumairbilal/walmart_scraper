@@ -5,6 +5,7 @@ import time
 import uuid
 import string
 import random
+import json
 import streamlit as st
 import requests
 import pandas as pd
@@ -1262,3 +1263,4 @@ if st.session_state.app_state == "scraping":
     </div>
 
     """, unsafe_allow_html=True)
+

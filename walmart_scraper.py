@@ -5,7 +5,6 @@ import time
 import uuid
 import string
 import random
-import json
 import streamlit as st
 import requests
 import pandas as pd
@@ -14,6 +13,13 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 from streamlit_option_menu import option_menu
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+PLAN_LIMITS = {
+    "Free": {"daily_limit": 50, "valid_days": 7},
+    "Basic": {"daily_limit": 500, "valid_days": 30},
+    "Premium": {"daily_limit": 2500, "valid_days": 90},
+    "Enterprise": {"daily_limit": 5000, "valid_days": 365}
+}
 
 LOCAL_LICENSE_FILE = ".walmart_scraper_license"
 
@@ -27,19 +33,8 @@ class FirebaseFunctions:
     def initialize_firebase():
         """Initialize Firebase connection"""
         if not firebase_admin._apps:
-            # Try to load from environment variable first (Railway)
-            firebase_env = os.getenv("FIREBASE_CREDENTIALS")
-
-            if firebase_env:
-                # Load from Railway environment variable
-                firebase_config = json.loads(firebase_env)
-                cred = credentials.Certificate(firebase_config)
-            else:
-                # Fallback: load from local JSON file (for local dev)
-                cred = credentials.Certificate("umisoft-client-database-firebase-adminsdk.json")
-
+            cred = credentials.Certificate("umisoft-client-database-firebase-adminsdk.json")
             firebase_admin.initialize_app(cred)
-
         FirebaseFunctions._firestore_db = firestore.client()
     
     @staticmethod
@@ -166,7 +161,7 @@ class FirebaseFunctions:
     
     @staticmethod
     def add_new_client(client_data):
-        """Add new client to Firebase with default URL limit"""
+        """Add new client to Firebase with dynamic URL limit and validity based on plan"""
         try:
             if FirebaseFunctions._firestore_db is None:
                 FirebaseFunctions.initialize_firebase()
@@ -176,7 +171,13 @@ class FirebaseFunctions:
             client_data["RegistrationDate"] = datetime.datetime.now().strftime("%Y-%m-%d")
             client_data["LastValidated"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             client_data["DailyUrlCount"] = 0
-            client_data["DailyUrlLimit"] = 5000  # Matches user data
+            
+            # Dynamic limit and validity based on plan
+            plan = client_data.get("Plan", "Free")  # Default to Free if not set
+            plan_config = PLAN_LIMITS.get(plan, PLAN_LIMITS["Free"])  # Fallback to Free
+            client_data["DailyUrlLimit"] = plan_config["daily_limit"]
+            client_data["ValidUntil"] = (datetime.datetime.now() + datetime.timedelta(days=plan_config["valid_days"])).strftime("%Y-%m-%d")
+            
             mac_address = str(uuid.getnode())
             client_data["ClientMacAddress"] = mac_address
             
@@ -801,6 +802,14 @@ if st.session_state.app_state == "auth":
                 full_name = st.text_input("Full Name", placeholder="John Doe")
                 email = st.text_input("Email Address", placeholder="john@example.com")
                 firecrawl_api_key = st.text_input("Firecrawl API Key", placeholder="fc-...", type="password")
+                selected_plan = st.selectbox("Select Plan", [
+                    "Free Plan - 50 URLs/Day (7 Days)",
+                    "Basic Plan - 500 URLs/Day (30 Days)",
+                    "Premium Plan - 2,500 URLs/Day (90 Days)",
+                    "Enterprise Plan - 5,000 URLs/Day (365 Days)"
+                ], help="Choose your subscription plan")
+                # Extract base plan name (e.g., "Free" from "Free Plan - 50 URLs/Day (7 Days)")
+                base_plan = selected_plan.split(" - ")[0].replace(" Plan", "")
             with col2:
                 mac_address = str(uuid.getnode())
                 st.text_input("Device ID (MAC Address)", value=mac_address, disabled=True)
@@ -831,12 +840,11 @@ if st.session_state.app_state == "auth":
                                 "ClientEmail": email,
                                 "ClientMacAddress": mac_address,
                                 "RegistrationDate": registration_date,
-                                "Plan": "Base",
+                                "Plan": base_plan,  # Store the base plan name (e.g., "Free")
                                 "ToolName": "walmart_scraper",
                                 "AccessStatus": "ON",
-                                "ValidUntil": (datetime.datetime.now() + datetime.timedelta(days=7)).strftime("%Y-%m-%d"),
+                                # ValidUntil and DailyUrlLimit set dynamically in add_new_client
                                 "DailyUrlCount": 0,
-                                "DailyUrlLimit": 5000,
                                 "FirecrawlApiKey": firecrawl_api_key
                             }
                             
@@ -852,7 +860,7 @@ if st.session_state.app_state == "auth":
                                 if dont_ask:
                                     with open(LOCAL_LICENSE_FILE, "w") as f:
                                         f.write(license_key)
-                                st.success(f"Account created! License Key: **{license_key}** (Save this if needed).")
+                                st.success(f"Account created on **{selected_plan}**! License Key: **{license_key}** (Save this if needed).")
                                 st.rerun()
                             else:
                                 st.error("Failed to create account. Try again.")
@@ -1261,6 +1269,4 @@ if st.session_state.app_state == "scraping":
         Premium features include unlimited scraping and dedicated support.<br>
         Contact: <a href="mailto:support@umisoft.com" style="text-decoration: none;">support@umisoft.com</a> | © 2025 Umisoft Ltd. | Version 2.0
     </div>
-
     """, unsafe_allow_html=True)
-

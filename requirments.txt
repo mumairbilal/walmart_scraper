@@ -1,0 +1,6 @@
+streamlit
+firecrawl
+firebase-admin
+pandas
+requests
+streamlit-option-menu

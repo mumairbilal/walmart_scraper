@@ -24,7 +24,7 @@ PLAN_LIMITS = {
 
 st.set_page_config(
     page_title="Walmart Scraper Powered by Umisoft",
-    page_icon="favicon.png"  
+    page_icon="icon.png"  
 )
 
 LOCAL_LICENSE_FILE = ".walmart_scraper_license"
@@ -1281,5 +1281,6 @@ if st.session_state.app_state == "scraping":
         Contact: <a href="mailto:support@umisoft.com" style="text-decoration: none;">support@umisoft.com</a> | © 2025 Umisoft Ltd. | Version 2.0
     </div>
     """, unsafe_allow_html=True)
+
 
 

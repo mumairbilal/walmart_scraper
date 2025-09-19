@@ -11,6 +11,7 @@ import pandas as pd
 from firecrawl import Firecrawl
 import firebase_admin
 from firebase_admin import credentials, firestore
+import json
 from streamlit_option_menu import option_menu
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -33,9 +34,14 @@ class FirebaseFunctions:
     def initialize_firebase():
         """Initialize Firebase connection"""
         if not firebase_admin._apps:
-            cred = credentials.Certificate("umisoft-client-database-firebase-adminsdk.json")
-            firebase_admin.initialize_app(cred)
-        FirebaseFunctions._firestore_db = firestore.client()
+            firebase_env = os.getenv("FIREBASE_CREDENTIALS")
+            if firebase_env:
+                firebase_config = json.loads(firebase_env)
+                cred = credentials.Certificate(firebase_config)
+            else:
+                cred = credentials.Certificate("umisoft-client-database-firebase-adminsdk.json")
+                firebase_admin.initialize_app(cred)
+                FirebaseFunctions._firestore_db = firestore.client()
     
     @staticmethod
     def get_all_client_data():

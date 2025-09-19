@@ -26,8 +26,19 @@ class FirebaseFunctions:
     def initialize_firebase():
         """Initialize Firebase connection"""
         if not firebase_admin._apps:
-            cred = credentials.Certificate("umisoft-client-database-firebase-adminsdk.json")
+            # Try to load from environment variable first (Railway)
+            firebase_env = os.getenv("FIREBASE_CREDENTIALS")
+
+            if firebase_env:
+                # Load from Railway environment variable
+                firebase_config = json.loads(firebase_env)
+                cred = credentials.Certificate(firebase_config)
+            else:
+                # Fallback: load from local JSON file (for local dev)
+                cred = credentials.Certificate("umisoft-client-database-firebase-adminsdk.json")
+
             firebase_admin.initialize_app(cred)
+
         FirebaseFunctions._firestore_db = firestore.client()
     
     @staticmethod
@@ -1249,4 +1260,5 @@ if st.session_state.app_state == "scraping":
         Premium features include unlimited scraping and dedicated support.<br>
         Contact: <a href="mailto:support@umisoft.com" style="text-decoration: none;">support@umisoft.com</a> | © 2025 Umisoft Ltd. | Version 2.0
     </div>
+
     """, unsafe_allow_html=True)

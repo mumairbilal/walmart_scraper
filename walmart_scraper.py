@@ -23,11 +23,6 @@ PLAN_LIMITS = {
 }
 
 LOCAL_LICENSE_FILE = ".walmart_scraper_license"
-DEVICE_ID_FILE = ".device_id"
-st.set_page_config(
-    page_title="Walmart Scraper Powered by Umisoft",
-    page_icon="icon.png"
-)
 
 # -------------------------------
 # Firebase License Functions
@@ -63,7 +58,7 @@ class FirebaseFunctions:
         return all_client_data
     
     @staticmethod
-    def is_client_eligible(client_data, expected_bot_name, expected_valid_date, device_id):
+    def is_client_eligible(client_data, expected_bot_name, expected_valid_date, mac_address):
         """Check if client is eligible based on data"""
         if client_data is None:
             return False
@@ -96,14 +91,14 @@ class FirebaseFunctions:
             if valid_date < expected_valid_date:
                 return False
             
-            registered_device_id = client_data.get("DeviceId", "")
-            if registered_device_id and registered_device_id != device_id:
-                st.warning("Device ID mismatch detected. Proceeding with license key and email validation.")
-                # Fallback to email or license key validation if needed
-                return True  # Adjust based on security requirements
+            registered_mac = client_data.get("ClientMacAddress", "")
+            if registered_mac and registered_mac != mac_address:
+                st.warning("MAC address mismatch detected. Proceeding with license key and email validation.")
+                # Add fallback validation with email or license key
+                return True  # Temporary; adjust based on your security needs
             
             return True
-            
+                
         except Exception as e:
             st.error(f"Validation error: {e}")
             return False
@@ -138,7 +133,7 @@ class FirebaseFunctions:
             
             clients_ref = FirebaseFunctions._firestore_db.collection("licenses")
             query = clients_ref.where("ClientEmail", "==", email)
-            docs = list(query.stream)
+            docs = list(query.stream())
             
             if len(docs) > 0:
                 client_data = docs[0].to_dict()
@@ -177,9 +172,7 @@ class FirebaseFunctions:
         try:
             if FirebaseFunctions._firestore_db is None:
                 FirebaseFunctions.initialize_firebase()
-                if FirebaseFunctions._firestore_db is None:
-                    raise Exception("Firestore client initialization failed")
-                
+            
             license_key = FirebaseFunctions.generate_license_key()
             client_data["LicenseKey"] = license_key
             client_data["RegistrationDate"] = datetime.datetime.now().strftime("%Y-%m-%d")
@@ -187,10 +180,13 @@ class FirebaseFunctions:
             client_data["DailyUrlCount"] = 0
             
             # Dynamic limit and validity based on plan
-            plan = client_data.get("Plan", "Free")
-            plan_config = PLAN_LIMITS.get(plan, PLAN_LIMITS["Free"])
+            plan = client_data.get("Plan", "Free")  # Default to Free if not set
+            plan_config = PLAN_LIMITS.get(plan, PLAN_LIMITS["Free"])  # Fallback to Free
             client_data["DailyUrlLimit"] = plan_config["daily_limit"]
             client_data["ValidUntil"] = (datetime.datetime.now() + datetime.timedelta(days=plan_config["valid_days"])).strftime("%Y-%m-%d")
+            
+            mac_address = str(uuid.getnode())
+            client_data["ClientMacAddress"] = mac_address
             
             clients_ref = FirebaseFunctions._firestore_db.collection("licenses")
             new_doc_ref = clients_ref.document()
@@ -287,38 +283,24 @@ class FirebaseFunctions:
 # Helper Functions
 # -------------------------------
 def get_mac_address():
-    """Get a stable device ID for the machine"""
-    if "device_id" not in st.session_state:
-        # Check if a persistent device ID file exists
-        if os.path.exists(DEVICE_ID_FILE):
-            with open(DEVICE_ID_FILE, "r") as f:
-                device_id = f.read().strip()
-                if device_id and len(device_id) == 36:  # Validate UUID format
-                    st.session_state.device_id = device_id
-                else:
-                    # Invalid or missing ID, generate new one
-                    device_id = str(uuid.uuid4())
-                    with open(DEVICE_ID_FILE, "w") as f:
-                        f.write(device_id)
-                    st.session_state.device_id = device_id
-        else:
-            # Generate and save new device ID if file doesn't exist
-            device_id = str(uuid.uuid4())
-            with open(DEVICE_ID_FILE, "w") as f:
-                f.write(device_id)
-            st.session_state.device_id = device_id
-        
-        # Sync with Firebase if user is logged in
-        if st.session_state.get("user_data") and st.session_state.get("user_data").get("id"):
-            try:
-                doc_ref = FirebaseFunctions._firestore_db.collection("licenses").document(st.session_state.user_data["id"])
-                doc_ref.update({"DeviceId": st.session_state.device_id})
-            except Exception as e:
-                st.error(f"Error syncing device ID with Firebase: {e}")
-                st.session_state.error_log.append(f"{datetime.datetime.now()}: Error syncing device ID: {e}")
-    return st.session_state.device_id
+    """Get a stable MAC address or device ID for the machine"""
+    device_id_file = ".device_id"
+    
+    # Try to read from local file if it exists
+    if os.path.exists(device_id_file):
+        with open(device_id_file, "r") as f:
+            return f.read().strip()
+    
+    # Fallback to uuid.getnode() for a hardware-based MAC
+    mac = str(uuid.getnode())
+    
+    # Always save the MAC address to make it static across runs/refreshes
+    with open(device_id_file, "w") as f:
+        f.write(mac)
+    
+    return mac
 
-def check_license_eligibility(license_key, bot_name, device_id):
+def check_license_eligibility(license_key, bot_name, mac_address):
     """Check if license is eligible with security checks"""
     try:
         expected_valid_date = datetime.datetime.now()
@@ -326,7 +308,7 @@ def check_license_eligibility(license_key, bot_name, device_id):
         if not client_data:
             return False, None
         
-        is_eligible = FirebaseFunctions.is_client_eligible(client_data, bot_name, expected_valid_date, device_id)
+        is_eligible = FirebaseFunctions.is_client_eligible(client_data, bot_name, expected_valid_date, mac_address)
         if not is_eligible:
             return False, client_data
         
@@ -851,7 +833,7 @@ if st.session_state.app_state == "auth":
                 base_plan = selected_plan.split(" - ")[0].replace(" Plan", "")
             with col2:
                 mac_address = get_mac_address()
-                st.text_input("Device ID", value=mac_address, disabled=True)
+                st.text_input("Device ID (MAC Address)", value=mac_address, disabled=True)
                 registration_date = datetime.datetime.now().strftime("%Y-%m-%d")
                 st.text_input("Registration Date", value=registration_date, disabled=True)
             
@@ -877,11 +859,12 @@ if st.session_state.app_state == "auth":
                             client_data = {
                                 "ClientName": full_name,
                                 "ClientEmail": email,
-                                "DeviceId": mac_address,
+                                "ClientMacAddress": mac_address,
                                 "RegistrationDate": registration_date,
-                                "Plan": base_plan,
+                                "Plan": base_plan,  # Store the base plan name (e.g., "Free")
                                 "ToolName": "walmart_scraper",
                                 "AccessStatus": "ON",
+                                # ValidUntil and DailyUrlLimit set dynamically in add_new_client
                                 "DailyUrlCount": 0,
                                 "FirecrawlApiKey": firecrawl_api_key
                             }
@@ -906,14 +889,14 @@ if st.session_state.app_state == "auth":
     with tab2:
         st.subheader("Login to Your Account")
         license_key = st.text_input("License Key", type="password", placeholder="Enter your license key")
-        device_id = get_mac_address()
-        st.text_input("Device ID", value=device_id, disabled=True)
+        mac_address = get_mac_address()
+        st.text_input("Device ID (MAC Address)", value=mac_address, disabled=True)
         dont_ask = st.checkbox("Don't ask again on this device")
         
         if st.button("Validate License"):
             if license_key:
                 with st.spinner("Validating license..."):
-                    is_eligible, client_data = check_license_eligibility(license_key, "walmart_scraper", device_id)
+                    is_eligible, client_data = check_license_eligibility(license_key, "walmart_scraper", mac_address)
                     if is_eligible:
                         if dont_ask:
                             with open(LOCAL_LICENSE_FILE, "w") as f:
@@ -1078,4 +1061,233 @@ if st.session_state.app_state == "scraping":
                 try:
                     urls = [line.strip() for line in url_text.splitlines() if line.strip()]
                     if len(urls) > (max_urls - daily_urls_used):
-                        st.error(f"❌ This would exceed the remaining {max_urls - daily_urls_used} URL limit (Daily used: {daily
+                        st.error(f"❌ This would exceed the remaining {max_urls - daily_urls_used} URL limit (Daily used: {daily_urls_used}).")
+                        urls = []
+                    else:
+                        st.markdown(f'<div class="custom-info">Successfully loaded {len(urls)} URLs</div>', unsafe_allow_html=True)
+                except Exception as e:
+                    st.error(f"❌ Error processing URLs: {e}")
+                    st.session_state.error_log.append(f"{datetime.datetime.now()}: Error processing URLs: {e}")
+
+    if urls:
+        st.write(f"URLs to scrape:", urls)
+
+    # Scraping Button with Live Preview
+    if st.button("Start Scraping", disabled=not urls) and not st.session_state.scraping_in_progress:
+        st.session_state.scraping_in_progress = True
+        st.session_state.current_scraping_index = 0
+        st.session_state.total_urls = len(urls)
+        st.session_state.scraped_count = 0
+        st.session_state.error_count = 0
+        st.session_state.local_scraped_count = 0
+        st.session_state.pending_quota_updates = []
+        st.session_state.all_data = []
+        st.session_state.error_log = []
+        st.session_state.progress_bar = st.progress(0)
+        st.session_state.preview_df = st.empty()
+        st.session_state.status_text = st.empty()
+        st.session_state.start_time = time.time()
+        mac_address = get_mac_address()
+        avg_time_per_url = 0
+
+    if st.session_state.scraping_in_progress:
+        i = st.session_state.current_scraping_index
+        if i < st.session_state.total_urls:
+            if st.session_state.daily_urls_used >= max_urls:
+                st.error("❌ Daily URL limit reached. Cannot scrape more.")
+                st.session_state.scraping_in_progress = False
+                st.rerun()
+            with st.spinner(f"Scraping URL {i+1}/{st.session_state.total_urls}: {urls[i]}"):
+                scraped_success = False
+                row = None
+                try:
+                    prompt = f"""
+                    Extract structured product details from this page.
+                    Return ONLY these fields as valid JSON: {', '.join(st.session_state.selected_fields)}.
+                    """
+                    res = firecrawl.extract(urls=[urls[i]], prompt=prompt)
+                    if res and res.data:
+                        data = res.data
+                        data["Sourceurl"] = urls[i]
+                        row = {
+                            f: (data.get(f, "") if not isinstance(data.get(f, ""), list)
+                                else "; ".join(map(str, data.get(f, ""))))
+                            for f in st.session_state.selected_fields
+                        }
+                        scraped_success = True
+                    else:
+                        st.session_state.error_log.append(f"{datetime.datetime.now()}: Skipped URL {urls[i]}: No data returned")
+                        st.warning(f"⚠️ Skipped URL {urls[i]}: No data returned.")
+                except Exception as e:
+                    st.session_state.error_log.append(f"{datetime.datetime.now()}: Skipped URL {urls[i]}: Error - {str(e)}")
+                    st.warning(f"⚠️ Skipped URL {urls[i]}: Error - {str(e)}.")
+
+                if row is not None:
+                    st.session_state.all_data.append(row)
+                    st.session_state.scraped_count += 1
+                    st.session_state.local_scraped_count += 1
+                    # Queue quota update for batch processing
+                    license_key = st.session_state.user_data.get("LicenseKey", "")
+                    try:
+                        updated = FirebaseFunctions.update_client_validation(license_key, mac_address, 1)
+                        if updated:
+                            st.session_state.daily_urls_used += 1
+                            st.session_state.error_log.append(f"{datetime.datetime.now()}: Quota updated successfully for URL {urls[i]}")
+                        else:
+                            st.session_state.pending_quota_updates.append(urls[i])
+                            st.session_state.error_log.append(f"{datetime.datetime.now()}: Quota update failed for URL {urls[i]}: Update returned False")
+                            st.warning(f"⚠️ Failed to update quota for URL {urls[i]}. Added to pending updates.")
+                    except Exception as e:
+                        st.session_state.pending_quota_updates.append(urls[i])
+                        st.session_state.error_log.append(f"{datetime.datetime.now()}: Quota update failed for URL {urls[i]}: {str(e)}")
+                        st.warning(f"⚠️ Failed to update quota for URL {urls[i]}: {str(e)}. Added to pending updates.")
+                else:
+                    st.session_state.error_count += 1
+                
+                
+            
+            # Update live preview based on plan
+            if st.session_state.all_data:
+                try:
+                    temp_df = pd.DataFrame(st.session_state.all_data)
+                    plan_limits = {
+                        "free": 50,
+                        "basic": 500,
+                        "premium": 2500,
+                        "enterprise": 5000
+                    }
+                    display_limit = min(len(temp_df), plan_limits.get(st.session_state.user_tier, 50))
+                    st.session_state.preview_df.dataframe(temp_df.head(display_limit), use_container_width=True, height=200)
+                except Exception as e:
+                    st.session_state.error_log.append(f"{datetime.datetime.now()}: Preview update error: {str(e)}")
+            
+            # Update progress
+            progress = (i + 1) / st.session_state.total_urls
+            st.session_state.progress_bar.progress(progress)
+            percentage = int(progress * 100)
+            
+            # Estimated time
+            try:
+                elapsed_time = time.time() - st.session_state.start_time
+                if i + 1 > 0:
+                    avg_time_per_url = elapsed_time / (i + 1)
+                remaining_urls = st.session_state.total_urls - (i + 1)
+                estimated_remaining = avg_time_per_url * remaining_urls
+                eta_minutes = int(estimated_remaining // 60)
+                eta_seconds = int(estimated_remaining % 60)
+                eta_str = f"ETA: {eta_minutes}m {eta_seconds}s" if estimated_remaining > 0 else ""
+            except Exception as e:
+                eta_str = "ETA: Calculating..."
+                st.session_state.error_log.append(f"{datetime.datetime.now()}: ETA calculation error: {str(e)}")
+            
+            st.session_state.status_text.text(f"Status: {percentage}% complete | {st.session_state.scraped_count} scraped | {st.session_state.error_count} errors | {eta_str}")
+        
+            st.session_state.current_scraping_index += 1
+            st.rerun()
+
+        if st.session_state.current_scraping_index >= st.session_state.total_urls:
+            st.session_state.scraping_in_progress = False
+            if st.session_state.all_data:
+                try:
+                    st.session_state.scraped_data = st.session_state.all_data
+                    # Retry pending quota updates
+                    if st.session_state.pending_quota_updates:
+                        with st.spinner("Applying pending quota updates..."):
+                            success = FirebaseFunctions.retry_pending_quota_updates(
+                                st.session_state.user_data.get("LicenseKey", ""),
+                                get_mac_address(),
+                                st.session_state.pending_quota_updates
+                            )
+                            if success:
+                                st.session_state.daily_urls_used += len(st.session_state.pending_quota_updates)
+                                st.session_state.error_log.append(f"{datetime.datetime.now()}: Successfully applied {len(st.session_state.pending_quota_updates)} pending quota updates")
+                                st.session_state.pending_quota_updates = []
+                            else:
+                                st.session_state.error_log.append(f"{datetime.datetime.now()}: Failed to apply {len(st.session_state.pending_quota_updates)} pending quota updates")
+                    # Refetch latest daily count
+                    license_key = st.session_state.user_data.get("LicenseKey", "")
+                    client_data = None
+                    retry_delay = 1
+                    max_db_retries = 7
+                    db_retry_count = 0
+                    while client_data is None and db_retry_count < max_db_retries:
+                        try:
+                            client_data = FirebaseFunctions.get_client_data_by_license_key(license_key)
+                            if client_data:
+                                st.session_state.daily_urls_used = client_data.get("DailyUrlCount", st.session_state.daily_urls_used)
+                                st.session_state.error_log.append(f"{datetime.datetime.now()}: Final quota refetched successfully: {st.session_state.daily_urls_used}")
+                            else:
+                                raise ValueError("No client data found")
+                        except Exception as e:
+                            db_retry_count += 1
+                            st.session_state.error_log.append(f"{datetime.datetime.now()}: Final quota fetch attempt {db_retry_count}: {str(e)}")
+                            if db_retry_count < max_db_retries:
+                                time.sleep(retry_delay)
+                                retry_delay = min(retry_delay * 2, 20)
+                            else:
+                                st.session_state.error_log.append(f"{datetime.datetime.now()}: Failed to fetch final quota after {max_db_retries} retries: {str(e)}")
+                    st.success(f"🎉 Scraping completed! Success: {st.session_state.scraped_count}, Errors: {st.session_state.error_count}, URLs Used: {st.session_state.daily_urls_used}, Local Scraped: {st.session_state.local_scraped_count}")
+                    if st.session_state.error_log:
+                        with st.expander("Debug: Error Log", expanded=False):
+                            st.write(st.session_state.error_log)
+                except Exception as e:
+                    st.session_state.error_log.append(f"{datetime.datetime.now()}: Finalization error: {str(e)}")
+            else:
+                st.warning("⚠️ No data extracted. Check URLs.")
+            st.rerun()
+
+    # Display Final Scraped Data
+    if st.session_state.scraped_data:
+        try:
+            df = pd.DataFrame(st.session_state.scraped_data)
+            plan_limits = {
+                "free": 50,
+                "basic": 500,
+                "premium": 2500,
+                "enterprise": 5000
+            }
+            display_limit = min(len(df), plan_limits.get(st.session_state.user_tier, 50))
+            st.subheader("📊 Data Preview")
+            st.dataframe(df.head(display_limit), use_container_width=True, height=400)
+
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.download_button(
+                    "⬇Download Sample",
+                    df.head(50).to_csv(index=False).encode("utf-8"),
+                    "sample_walmart_products.csv",
+                    "text/csv",
+                    help="Downloads up to 50 rows"
+                )
+            with col2:
+                if st.session_state.user_tier == "premium":
+                    st.download_button(
+                        "⬇Download Full Data",
+                        df.to_csv(index=False).encode("utf-8"),
+                        "walmart_products.csv",
+                        "text/csv"
+                    )
+                else:
+                    st.button("⬇Download Full Data (Premium Only)",
+                             help="Upgrade to premium for full datasets")
+            with col3:
+                if st.button("🗑️ Clear Data"):
+                    st.session_state.scraped_data = []
+                    st.success("🧹 Data cleared!")
+                    st.rerun()
+        except Exception as e:
+            st.session_state.error_log.append(f"{datetime.datetime.now()}: Data display error: {str(e)}")
+
+    # Tutorial and Footer
+    st.markdown("---")
+    st.subheader("📺 Tutorial Video")
+    st.video("https://www.youtube.com/watch?v=dQw4w9WgXcQ", format="video/mp4")
+    st.markdown("---")
+    st.markdown("""
+    <div style="text-align: center; font-size: 14px; padding: 20px 0;">
+        <strong>Umisoft Walmart Scraper</strong><br>
+        Empower your business with real-time product insights.<br>
+        Premium features include unlimited scraping and dedicated support.<br>
+        Contact: <a href="mailto:support@umisoft.com" style="text-decoration: none;">support@umisoft.com</a> | © 2025 Umisoft Ltd. | Version 2.0
+    </div>
+    """, unsafe_allow_html=True)

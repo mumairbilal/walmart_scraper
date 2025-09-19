@@ -810,9 +810,9 @@ if st.session_state.app_state == "auth":
                 firecrawl_api_key = st.text_input("Firecrawl API Key", placeholder="fc-...", type="password")
                 selected_plan = st.selectbox("Select Plan", [
                     "Free Plan - 50 URLs/Day (7 Days)",
-                    "Basic Plan - 500 URLs/Day (30 Days)",
-                    "Premium Plan - 2,500 URLs/Day (90 Days)",
-                    "Enterprise Plan - 5,000 URLs/Day (365 Days)"
+                    "Basic Plan - 500 URLs/Day (1 Month)",
+                    "Premium Plan - 2,500 URLs/Day (3 Months)",
+                    "Enterprise Plan - 5,000 URLs/Day (1 Year)"
                 ], help="Choose your subscription plan")
                 # Extract base plan name (e.g., "Free" from "Free Plan - 50 URLs/Day (7 Days)")
                 base_plan = selected_plan.split(" - ")[0].replace(" Plan", "")
@@ -1276,3 +1276,4 @@ if st.session_state.app_state == "scraping":
         Contact: <a href="mailto:support@umisoft.com" style="text-decoration: none;">support@umisoft.com</a> | © 2025 Umisoft Ltd. | Version 2.0
     </div>
     """, unsafe_allow_html=True)
+

@@ -293,9 +293,8 @@ def get_mac_address():
                 if device_id:
                     return device_id
 
-        # Try to get the actual hardware MAC address
+        # Try to get the MAC address of the first active network interface with IP enabled
         try:
-            # Get all network interfaces
             interfaces = netifaces.interfaces()
             for iface in interfaces:
                 # Skip loopback and virtual interfaces
@@ -303,22 +302,24 @@ def get_mac_address():
                     continue
                 # Get interface details
                 iface_data = netifaces.ifaddresses(iface)
-                # Check for MAC address (AF_LINK or AF_PACKET for Linux)
-                if netifaces.AF_LINK in iface_data:
-                    mac = iface_data[netifaces.AF_LINK][0].get('addr')
-                    if mac and mac != "00:00:00:00:00:00":
-                        # Clean and format the MAC address
-                        mac = mac.replace(':', '').replace('-', '').upper()
-                        # Save the MAC address to the device ID file
-                        try:
-                            with open(DEVICE_ID_FILE, "w") as f:
-                                f.write(mac)
-                            return mac
-                        except Exception as e:
-                            st.session_state.error_log.append(
-                                f"{datetime.datetime.now()}: Error saving MAC address to file: {str(e)}"
-                            )
-                            return mac  # Return MAC even if file save fails
+                # Check if the interface has an IP address (indicating it's active, similar to IPEnabled)
+                if netifaces.AF_INET in iface_data or netifaces.AF_INET6 in iface_data:
+                    # Check for MAC address (AF_LINK or AF_PACKET for Linux)
+                    if netifaces.AF_LINK in iface_data:
+                        mac = iface_data[netifaces.AF_LINK][0].get('addr')
+                        if mac and mac != "00:00:00:00:00:00":
+                            # Clean and format the MAC address
+                            mac = mac.replace(':', '').replace('-', '').upper()
+                            # Save the MAC address to the device ID file
+                            try:
+                                with open(DEVICE_ID_FILE, "w") as f:
+                                    f.write(mac)
+                                return mac
+                            except Exception as e:
+                                st.session_state.error_log.append(
+                                    f"{datetime.datetime.now()}: Error saving MAC address to file: {str(e)}"
+                                )
+                                return mac  # Return MAC even if file save fails
         except Exception as e:
             st.session_state.error_log.append(
                 f"{datetime.datetime.now()}: Error retrieving hardware MAC address: {str(e)}"

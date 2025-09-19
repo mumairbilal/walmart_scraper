@@ -4,3 +4,4 @@ firebase-admin
 pandas
 requests
 streamlit-option-menu
+netifaces

@@ -22,11 +22,6 @@ PLAN_LIMITS = {
     "Enterprise": {"daily_limit": 5000, "valid_days": 365}
 }
 
-st.set_page_config(
-    page_title="Walmart Scraper Powered by Umisoft",
-    page_icon="icon.png"  
-)
-
 LOCAL_LICENSE_FILE = ".walmart_scraper_license"
 
 # -------------------------------
@@ -287,8 +282,20 @@ class FirebaseFunctions:
 # Helper Functions
 # -------------------------------
 def get_mac_address():
-    """Get MAC address of the machine"""
-    return str(uuid.getnode())
+    """Get a stable MAC address or device ID for the machine"""
+    device_id_file = ".device_id"
+    
+    # Try to read from local file if it exists
+    if os.path.exists(device_id_file):
+        with open(device_id_file, "r") as f:
+            return f.read().strip()
+    
+    # Fallback to uuid.getnode() for a hardware-based MAC
+    mac = str(uuid.getnode())
+    
+    # Optionally save the MAC address if "Don't ask again" is checked during registration/login
+    # This will be handled in the registration/login logic below
+    return mac
 
 def check_license_eligibility(license_key, bot_name, mac_address):
     """Check if license is eligible with security checks"""
@@ -822,7 +829,7 @@ if st.session_state.app_state == "auth":
                 # Extract base plan name (e.g., "Free" from "Free Plan - 50 URLs/Day (7 Days)")
                 base_plan = selected_plan.split(" - ")[0].replace(" Plan", "")
             with col2:
-                mac_address = str(uuid.getnode())
+                mac_address = get_mac_address()
                 st.text_input("Device ID (MAC Address)", value=mac_address, disabled=True)
                 registration_date = datetime.datetime.now().strftime("%Y-%m-%d")
                 st.text_input("Registration Date", value=registration_date, disabled=True)
@@ -840,7 +847,7 @@ if st.session_state.app_state == "auth":
                         st.error("You must agree to the Terms of Service.")
                     else:
                         existing_client_email = FirebaseFunctions.get_client_data_by_email(email)
-                        existing_client_mac = FirebaseFunctions.get_client_data_by_mac(str(uuid.getnode()))
+                        existing_client_mac = FirebaseFunctions.get_client_data_by_mac(mac_address)
                         if existing_client_email:
                             st.error("An account with this email already exists. Please login or use a different email.")
                         elif existing_client_mac:
@@ -871,6 +878,9 @@ if st.session_state.app_state == "auth":
                                 if dont_ask:
                                     with open(LOCAL_LICENSE_FILE, "w") as f:
                                         f.write(license_key)
+                                    # Save the MAC address to .device_id for persistence
+                                    with open(".device_id", "w") as f:
+                                        f.write(mac_address)
                                 st.success(f"Account created on **{selected_plan}**! License Key: **{license_key}** (Save this if needed).")
                                 st.rerun()
                             else:
@@ -879,7 +889,7 @@ if st.session_state.app_state == "auth":
     with tab2:
         st.subheader("Login to Your Account")
         license_key = st.text_input("License Key", type="password", placeholder="Enter your license key")
-        mac_address = str(uuid.getnode())
+        mac_address = get_mac_address()
         st.text_input("Device ID (MAC Address)", value=mac_address, disabled=True)
         dont_ask = st.checkbox("Don't ask again on this device")
         
@@ -891,6 +901,9 @@ if st.session_state.app_state == "auth":
                         if dont_ask:
                             with open(LOCAL_LICENSE_FILE, "w") as f:
                                 f.write(license_key)
+                            # Save the MAC address to .device_id for persistence
+                            with open(".device_id", "w") as f:
+                                f.write(mac_address)
                         st.session_state.user_data = client_data
                         st.session_state.license_valid = True
                         st.session_state.app_state = "scraping"
@@ -920,7 +933,7 @@ if st.session_state.app_state == "auth":
 # -------------------------------
 if st.session_state.app_state == "scraping":
     # Sidebar
-    #st.sidebar.header("Scraper Settings")
+    st.sidebar.header("Scraper Settings")
     def sidebar_header(title, icon_path=None, subtitle=None, icon_width=24):
         html = '<div style="display: flex; align-items: center; margin-bottom: 10px;">'
         if icon_path and os.path.exists(icon_path):
@@ -1281,7 +1294,3 @@ if st.session_state.app_state == "scraping":
         Contact: <a href="mailto:support@umisoft.com" style="text-decoration: none;">support@umisoft.com</a> | © 2025 Umisoft Ltd. | Version 2.0
     </div>
     """, unsafe_allow_html=True)
-
-
-
-

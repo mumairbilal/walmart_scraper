@@ -22,6 +22,11 @@ PLAN_LIMITS = {
     "Enterprise": {"daily_limit": 5000, "valid_days": 365}
 }
 
+st.set_page_config(
+    page_title="Walmart Scraper Powered by Umisoft",                 # You can also use "favicon.png" path
+    layout="wide"                   # Optional: "centered" or "wide"
+)
+
 LOCAL_LICENSE_FILE = ".walmart_scraper_license"
 
 # -------------------------------
@@ -1276,3 +1281,4 @@ if st.session_state.app_state == "scraping":
         Contact: <a href="mailto:support@umisoft.com" style="text-decoration: none;">support@umisoft.com</a> | © 2025 Umisoft Ltd. | Version 2.0
     </div>
     """, unsafe_allow_html=True)
+

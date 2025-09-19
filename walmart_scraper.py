@@ -60,51 +60,51 @@ class FirebaseFunctions:
         
         return all_client_data
     
-    @staticmethod
-    def is_client_eligible(client_data, expected_bot_name, expected_valid_date, mac_address):
-        """Check if client is eligible based on data"""
-        if client_data is None:
-            return False
-        
-        if str(client_data.get("ToolName", "")) != str(expected_bot_name):
-            return False
-        
-        if str(client_data.get("AccessStatus", "")) != "ON":
-            return False
-        
-        try:
-            date_string = client_data.get("ValidUntil")
-            if not date_string:
+        @staticmethod
+        def is_client_eligible(client_data, expected_bot_name, expected_valid_date, device_id):
+            """Check if client is eligible based on data"""
+            if client_data is None:
                 return False
             
-            date_string = str(date_string)
-            date_formats = ["%d-%b-%y", "%Y-%m-%d", "%d-%m-%Y"]
-            
-            valid_date = None
-            for date_format in date_formats:
-                try:
-                    valid_date = datetime.datetime.strptime(date_string, date_format)
-                    break
-                except ValueError:
-                    continue
-            
-            if valid_date is None:
+            if str(client_data.get("ToolName", "")) != str(expected_bot_name):
                 return False
             
-            if valid_date < expected_valid_date:
+            if str(client_data.get("AccessStatus", "")) != "ON":
                 return False
             
-            registered_mac = client_data.get("ClientMacAddress", "")
-            if registered_mac and registered_mac != mac_address:
-                st.warning("MAC address mismatch detected. Proceeding with license key and email validation.")
-                # Add fallback validation with email or license key
-                return True  # Temporary; adjust based on your security needs
-            
-            return True
+            try:
+                date_string = client_data.get("ValidUntil")
+                if not date_string:
+                    return False
                 
-        except Exception as e:
-            st.error(f"Validation error: {e}")
-            return False
+                date_string = str(date_string)
+                date_formats = ["%d-%b-%y", "%Y-%m-%d", "%d-%m-%Y"]
+                
+                valid_date = None
+                for date_format in date_formats:
+                    try:
+                        valid_date = datetime.datetime.strptime(date_string, date_format)
+                        break
+                    except ValueError:
+                        continue
+                
+                if valid_date is None:
+                    return False
+                
+                if valid_date < expected_valid_date:
+                    return False
+                
+                registered_device_id = client_data.get("DeviceId", "")
+                if registered_device_id and registered_device_id != device_id:
+                    st.warning("Device ID mismatch detected. Proceeding with license key and email validation.")
+                    # Fallback to email or license key validation if needed
+                    return True  # Adjust based on security requirements
+                
+                return True
+                    
+            except Exception as e:
+                st.error(f"Validation error: {e}")
+                return False
     
     @staticmethod
     def get_client_data_by_license_key(license_key):
@@ -169,37 +169,36 @@ class FirebaseFunctions:
             st.error(f"Error fetching client data by MAC: {e}")
             return None
     
-    @staticmethod
-    def add_new_client(client_data):
-        """Add new client to Firebase with dynamic URL limit and validity based on plan"""
-        try:
-            if FirebaseFunctions._firestore_db is None:
-                FirebaseFunctions.initialize_firebase()
-            
-            license_key = FirebaseFunctions.generate_license_key()
-            client_data["LicenseKey"] = license_key
-            client_data["RegistrationDate"] = datetime.datetime.now().strftime("%Y-%m-%d")
-            client_data["LastValidated"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            client_data["DailyUrlCount"] = 0
-            
-            # Dynamic limit and validity based on plan
-            plan = client_data.get("Plan", "Free")  # Default to Free if not set
-            plan_config = PLAN_LIMITS.get(plan, PLAN_LIMITS["Free"])  # Fallback to Free
-            client_data["DailyUrlLimit"] = plan_config["daily_limit"]
-            client_data["ValidUntil"] = (datetime.datetime.now() + datetime.timedelta(days=plan_config["valid_days"])).strftime("%Y-%m-%d")
-            
-            mac_address = str(uuid.getnode())
-            client_data["ClientMacAddress"] = mac_address
-            
-            clients_ref = FirebaseFunctions._firestore_db.collection("licenses")
-            new_doc_ref = clients_ref.document()
-            new_doc_ref.set(client_data)
-            
-            return license_key, new_doc_ref.id
-            
-        except Exception as e:
-            st.error(f"Error adding new client: {e}")
-            return None, None
+        @staticmethod
+        def add_new_client(client_data):
+            """Add new client to Firebase with dynamic URL limit and validity based on plan"""
+            try:
+                if FirebaseFunctions._firestore_db is None:
+                    FirebaseFunctions.initialize_firebase()
+                    if FirebaseFunctions._firestore_db is None:
+                        raise Exception("Firestore client initialization failed")
+                
+                license_key = FirebaseFunctions.generate_license_key()
+                client_data["LicenseKey"] = license_key
+                client_data["RegistrationDate"] = datetime.datetime.now().strftime("%Y-%m-%d")
+                client_data["LastValidated"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                client_data["DailyUrlCount"] = 0
+                
+                # Dynamic limit and validity based on plan
+                plan = client_data.get("Plan", "Free")
+                plan_config = PLAN_LIMITS.get(plan, PLAN_LIMITS["Free"])
+                client_data["DailyUrlLimit"] = plan_config["daily_limit"]
+                client_data["ValidUntil"] = (datetime.datetime.now() + datetime.timedelta(days=plan_config["valid_days"])).strftime("%Y-%m-%d")
+                
+                clients_ref = FirebaseFunctions._firestore_db.collection("licenses")
+                new_doc_ref = clients_ref.document()
+                new_doc_ref.set(client_data)
+                
+                return license_key, new_doc_ref.id
+                
+            except Exception as e:
+                st.error(f"Error adding new client: {e}")
+                return None, None
     
     @staticmethod
     def update_client_validation(license_key, mac_address, url_count):
@@ -286,22 +285,21 @@ class FirebaseFunctions:
 # Helper Functions
 # -------------------------------
 def get_mac_address():
-    """Get a stable MAC address or device ID for the machine"""
-    device_id_file = ".device_id"
-    
-    # Try to read from local file if it exists
-    if os.path.exists(device_id_file):
-        with open(device_id_file, "r") as f:
-            return f.read().strip()
-    
-    # Fallback to uuid.getnode() for a hardware-based MAC
-    mac = str(uuid.getnode())
-    
-    # Optionally save the MAC address if "Don't ask again" is checked during registration/login
-    # This will be handled in the registration/login logic below
-    return mac
+    """Get a stable device ID for the machine"""
+    if "device_id" not in st.session_state:
+        # Generate a new UUID if not set
+        st.session_state.device_id = str(uuid.uuid4())
+        # Sync with Firebase if user is logged in
+        if st.session_state.get("user_data") and st.session_state.get("user_data").get("id"):
+            try:
+                doc_ref = FirebaseFunctions._firestore_db.collection("licenses").document(st.session_state.user_data["id"])
+                doc_ref.update({"DeviceId": st.session_state.device_id})
+            except Exception as e:
+                st.error(f"Error syncing device ID with Firebase: {e}")
+                st.session_state.error_log.append(f"{datetime.datetime.now()}: Error syncing device ID: {e}")
+    return st.session_state.device_id
 
-def check_license_eligibility(license_key, bot_name, mac_address):
+def check_license_eligibility(license_key, bot_name, device_id):
     """Check if license is eligible with security checks"""
     try:
         expected_valid_date = datetime.datetime.now()
@@ -309,7 +307,7 @@ def check_license_eligibility(license_key, bot_name, mac_address):
         if not client_data:
             return False, None
         
-        is_eligible = FirebaseFunctions.is_client_eligible(client_data, bot_name, expected_valid_date, mac_address)
+        is_eligible = FirebaseFunctions.is_client_eligible(client_data, bot_name, expected_valid_date, device_id)
         if not is_eligible:
             return False, client_data
         
@@ -834,7 +832,7 @@ if st.session_state.app_state == "auth":
                 base_plan = selected_plan.split(" - ")[0].replace(" Plan", "")
             with col2:
                 mac_address = get_mac_address()
-                st.text_input("Device ID (MAC Address)", value=mac_address, disabled=True)
+                st.text_input("Device ID", value=mac_address, disabled=True)
                 registration_date = datetime.datetime.now().strftime("%Y-%m-%d")
                 st.text_input("Registration Date", value=registration_date, disabled=True)
             
@@ -860,12 +858,11 @@ if st.session_state.app_state == "auth":
                             client_data = {
                                 "ClientName": full_name,
                                 "ClientEmail": email,
-                                "ClientMacAddress": mac_address,
+                                "DeviceId": mac_address,  # Use DeviceId instead of ClientMacAddress
                                 "RegistrationDate": registration_date,
-                                "Plan": base_plan,  # Store the base plan name (e.g., "Free")
+                                "Plan": base_plan,
                                 "ToolName": "walmart_scraper",
                                 "AccessStatus": "ON",
-                                # ValidUntil and DailyUrlLimit set dynamically in add_new_client
                                 "DailyUrlCount": 0,
                                 "FirecrawlApiKey": firecrawl_api_key
                             }
@@ -882,9 +879,6 @@ if st.session_state.app_state == "auth":
                                 if dont_ask:
                                     with open(LOCAL_LICENSE_FILE, "w") as f:
                                         f.write(license_key)
-                                    # Save the MAC address to .device_id for persistence
-                                    with open(".device_id", "w") as f:
-                                        f.write(mac_address)
                                 st.success(f"Account created on **{selected_plan}**! License Key: **{license_key}** (Save this if needed).")
                                 st.rerun()
                             else:
@@ -893,21 +887,18 @@ if st.session_state.app_state == "auth":
     with tab2:
         st.subheader("Login to Your Account")
         license_key = st.text_input("License Key", type="password", placeholder="Enter your license key")
-        mac_address = get_mac_address()
-        st.text_input("Device ID (MAC Address)", value=mac_address, disabled=True)
+        device_id = get_mac_address()
+        st.text_input("Device ID", value=device_id, disabled=True)
         dont_ask = st.checkbox("Don't ask again on this device")
         
         if st.button("Validate License"):
             if license_key:
                 with st.spinner("Validating license..."):
-                    is_eligible, client_data = check_license_eligibility(license_key, "walmart_scraper", mac_address)
+                    is_eligible, client_data = check_license_eligibility(license_key, "walmart_scraper", device_id)
                     if is_eligible:
                         if dont_ask:
                             with open(LOCAL_LICENSE_FILE, "w") as f:
                                 f.write(license_key)
-                            # Save the MAC address to .device_id for persistence
-                            with open(".device_id", "w") as f:
-                                f.write(mac_address)
                         st.session_state.user_data = client_data
                         st.session_state.license_valid = True
                         st.session_state.app_state = "scraping"
@@ -1298,5 +1289,6 @@ if st.session_state.app_state == "scraping":
         Contact: <a href="mailto:support@umisoft.com" style="text-decoration: none;">support@umisoft.com</a> | © 2025 Umisoft Ltd. | Version 2.0
     </div>
     """, unsafe_allow_html=True)
+
 
 

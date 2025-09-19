@@ -920,7 +920,7 @@ if st.session_state.app_state == "auth":
 # -------------------------------
 if st.session_state.app_state == "scraping":
     # Sidebar
-    st.sidebar.header("Scraper Settings")
+    #st.sidebar.header("Scraper Settings")
     def sidebar_header(title, icon_path=None, subtitle=None, icon_width=24):
         html = '<div style="display: flex; align-items: center; margin-bottom: 10px;">'
         if icon_path and os.path.exists(icon_path):
@@ -1281,6 +1281,7 @@ if st.session_state.app_state == "scraping":
         Contact: <a href="mailto:support@umisoft.com" style="text-decoration: none;">support@umisoft.com</a> | © 2025 Umisoft Ltd. | Version 2.0
     </div>
     """, unsafe_allow_html=True)
+
 
 
 

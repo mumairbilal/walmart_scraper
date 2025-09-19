@@ -23,6 +23,7 @@ PLAN_LIMITS = {
 }
 
 LOCAL_LICENSE_FILE = ".walmart_scraper_license"
+DEVICE_ID_FILE = ".device_id"
 
 # -------------------------------
 # Firebase License Functions
@@ -41,7 +42,7 @@ class FirebaseFunctions:
             else:
                 cred = credentials.Certificate("umisoft-client-database-firebase-adminsdk.json")
             firebase_admin.initialize_app(cred)
-        FirebaseFunctions._firestore_db = firestore.client()  # Ensure this is set after initialization
+        FirebaseFunctions._firestore_db = firestore.client()
     
     @staticmethod
     def get_all_client_data():
@@ -93,9 +94,8 @@ class FirebaseFunctions:
             
             registered_mac = client_data.get("ClientMacAddress", "")
             if registered_mac and registered_mac != mac_address:
-                st.warning("MAC address mismatch detected. Proceeding with license key and email validation.")
-                # Add fallback validation with email or license key
-                return True  # Temporary; adjust based on your security needs
+                st.error("MAC address mismatch detected. This license is tied to a different device.")
+                return False  # Stricter check: fail on MAC mismatch
             
             return True
                 
@@ -180,12 +180,12 @@ class FirebaseFunctions:
             client_data["DailyUrlCount"] = 0
             
             # Dynamic limit and validity based on plan
-            plan = client_data.get("Plan", "Free")  # Default to Free if not set
-            plan_config = PLAN_LIMITS.get(plan, PLAN_LIMITS["Free"])  # Fallback to Free
+            plan = client_data.get("Plan", "Free")
+            plan_config = PLAN_LIMITS.get(plan, PLAN_LIMITS["Free"])
             client_data["DailyUrlLimit"] = plan_config["daily_limit"]
             client_data["ValidUntil"] = (datetime.datetime.now() + datetime.timedelta(days=plan_config["valid_days"])).strftime("%Y-%m-%d")
             
-            mac_address = str(uuid.getnode())
+            mac_address = get_mac_address()
             client_data["ClientMacAddress"] = mac_address
             
             clients_ref = FirebaseFunctions._firestore_db.collection("licenses")
@@ -283,22 +283,32 @@ class FirebaseFunctions:
 # Helper Functions
 # -------------------------------
 def get_mac_address():
-    """Get a stable MAC address or device ID for the machine"""
-    device_id_file = ".device_id"
+    """Get a stable, unique device ID for the machine"""
+    try:
+        # Try to read from local file if it exists
+        if os.path.exists(DEVICE_ID_FILE):
+            with open(DEVICE_ID_FILE, "r") as f:
+                device_id = f.read().strip()
+                if device_id:
+                    return device_id
+        
+        # Generate a new unique ID using uuid4 (not tied to hardware)
+        device_id = str(uuid.uuid4())
+        
+        # Save the new ID to make it static for this device
+        try:
+            with open(DEVICE_ID_FILE, "w") as f:
+                f.write(device_id)
+        except Exception as e:
+            st.session_state.error_log.append(f"{datetime.datetime.now()}: Error saving device ID: {str(e)}")
+            st.warning(f"Failed to save device ID: {e}. Device ID will be regenerated on next run.")
+        
+        return device_id
     
-    # Try to read from local file if it exists
-    if os.path.exists(device_id_file):
-        with open(device_id_file, "r") as f:
-            return f.read().strip()
-    
-    # Fallback to uuid.getnode() for a hardware-based MAC
-    mac = str(uuid.getnode())
-    
-    # Always save the MAC address to make it static across runs/refreshes
-    with open(device_id_file, "w") as f:
-        f.write(mac)
-    
-    return mac
+    except Exception as e:
+        st.session_state.error_log.append(f"{datetime.datetime.now()}: Error in get_mac_address: {str(e)}")
+        # Fallback to generating a temporary ID if all else fails
+        return str(uuid.uuid4())
 
 def check_license_eligibility(license_key, bot_name, mac_address):
     """Check if license is eligible with security checks"""
@@ -323,8 +333,11 @@ def should_reset_daily_count(client_data):
     last_validated = client_data.get("LastValidated", "")
     if not last_validated:
         return True
-    last_validated_dt = datetime.datetime.strptime(last_validated, "%Y-%m-%d %H:%M:%S")
-    return last_validated_dt.day != datetime.datetime.now().day
+    try:
+        last_validated_dt = datetime.datetime.strptime(last_validated, "%Y-%m-%d %H:%M:%S")
+        return last_validated_dt.day != datetime.datetime.now().day
+    except ValueError:
+        return True
 
 # -------------------------------
 # Initialize Firebase
@@ -829,11 +842,10 @@ if st.session_state.app_state == "auth":
                     "Premium Plan - 2,500 URLs/Day (3 Months)",
                     "Enterprise Plan - 5,000 URLs/Day (1 Year)"
                 ], help="Choose your subscription plan")
-                # Extract base plan name (e.g., "Free" from "Free Plan - 50 URLs/Day (7 Days)")
                 base_plan = selected_plan.split(" - ")[0].replace(" Plan", "")
             with col2:
                 mac_address = get_mac_address()
-                st.text_input("Device ID (MAC Address)", value=mac_address, disabled=True)
+                st.text_input("Device ID", value=mac_address, disabled=True)
                 registration_date = datetime.datetime.now().strftime("%Y-%m-%d")
                 st.text_input("Registration Date", value=registration_date, disabled=True)
             
@@ -854,17 +866,16 @@ if st.session_state.app_state == "auth":
                         if existing_client_email:
                             st.error("An account with this email already exists. Please login or use a different email.")
                         elif existing_client_mac:
-                            st.error("You are already registered on this device. Please use a different device or login with your existing license key.")
+                            st.error("This device is already registered. Please login with your existing license key.")
                         else:
                             client_data = {
                                 "ClientName": full_name,
                                 "ClientEmail": email,
                                 "ClientMacAddress": mac_address,
                                 "RegistrationDate": registration_date,
-                                "Plan": base_plan,  # Store the base plan name (e.g., "Free")
+                                "Plan": base_plan,
                                 "ToolName": "walmart_scraper",
                                 "AccessStatus": "ON",
-                                # ValidUntil and DailyUrlLimit set dynamically in add_new_client
                                 "DailyUrlCount": 0,
                                 "FirecrawlApiKey": firecrawl_api_key
                             }
@@ -890,7 +901,7 @@ if st.session_state.app_state == "auth":
         st.subheader("Login to Your Account")
         license_key = st.text_input("License Key", type="password", placeholder="Enter your license key")
         mac_address = get_mac_address()
-        st.text_input("Device ID (MAC Address)", value=mac_address, disabled=True)
+        st.text_input("Device ID", value=mac_address, disabled=True)
         dont_ask = st.checkbox("Don't ask again on this device")
         
         if st.button("Validate License"):
@@ -993,6 +1004,8 @@ if st.session_state.app_state == "scraping":
     if st.sidebar.button("Logout"):
         if os.path.exists(LOCAL_LICENSE_FILE):
             os.remove(LOCAL_LICENSE_FILE)
+        if os.path.exists(DEVICE_ID_FILE):
+            os.remove(DEVICE_ID_FILE)
         st.session_state.app_state = "auth"
         st.session_state.user_data = None
         st.session_state.license_valid = False
@@ -1126,7 +1139,6 @@ if st.session_state.app_state == "scraping":
                     st.session_state.all_data.append(row)
                     st.session_state.scraped_count += 1
                     st.session_state.local_scraped_count += 1
-                    # Queue quota update for batch processing
                     license_key = st.session_state.user_data.get("LicenseKey", "")
                     try:
                         updated = FirebaseFunctions.update_client_validation(license_key, mac_address, 1)
@@ -1144,9 +1156,8 @@ if st.session_state.app_state == "scraping":
                 else:
                     st.session_state.error_count += 1
                 
-                
+                time.sleep(st.session_state.rate_limit_delay)
             
-            # Update live preview based on plan
             if st.session_state.all_data:
                 try:
                     temp_df = pd.DataFrame(st.session_state.all_data)
@@ -1161,12 +1172,10 @@ if st.session_state.app_state == "scraping":
                 except Exception as e:
                     st.session_state.error_log.append(f"{datetime.datetime.now()}: Preview update error: {str(e)}")
             
-            # Update progress
             progress = (i + 1) / st.session_state.total_urls
             st.session_state.progress_bar.progress(progress)
             percentage = int(progress * 100)
             
-            # Estimated time
             try:
                 elapsed_time = time.time() - st.session_state.start_time
                 if i + 1 > 0:
@@ -1190,7 +1199,6 @@ if st.session_state.app_state == "scraping":
             if st.session_state.all_data:
                 try:
                     st.session_state.scraped_data = st.session_state.all_data
-                    # Retry pending quota updates
                     if st.session_state.pending_quota_updates:
                         with st.spinner("Applying pending quota updates..."):
                             success = FirebaseFunctions.retry_pending_quota_updates(
@@ -1204,7 +1212,6 @@ if st.session_state.app_state == "scraping":
                                 st.session_state.pending_quota_updates = []
                             else:
                                 st.session_state.error_log.append(f"{datetime.datetime.now()}: Failed to apply {len(st.session_state.pending_quota_updates)} pending quota updates")
-                    # Refetch latest daily count
                     license_key = st.session_state.user_data.get("LicenseKey", "")
                     client_data = None
                     retry_delay = 1

@@ -1,4 +1,3 @@
-```python
 import base64
 import datetime
 import os
@@ -1454,4 +1453,4 @@ if st.session_state.app_state == "scraping":
         Contact: <a href="mailto:support@umisoft.com" style="text-decoration: none;">support@umisoft.com</a> | © 2025 Umisoft Ltd. | Version 2.0
     </div>
     """, unsafe_allow_html=True)
-```
+

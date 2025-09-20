@@ -21,29 +21,51 @@ PLAN_LIMITS = {
 }
 
 LOCAL_LICENSE_FILE = ".walmart_scraper_license"
+DEVICE_ID_FILE = ".device_id"
 
 def is_cloud():
     """Detect Railway"""
     return os.environ.get('RAILWAY_ENVIRONMENT') is not None
 
 def create_device_fingerprint():
-    """Client-side fingerprint for unique device ID"""
-    seed = str(uuid.uuid4()) + str(time.time_ns())
+    """Generate unique device ID"""
+    seed = str(uuid.uuid4())
     device_hash = hashlib.sha256(seed.encode()).hexdigest()
     return ':'.join([device_hash[i:i+2].upper() for i in range(0, 12, 2)])
 
 def get_device_id():
-    """Get stable device ID per browser/device, persists via session_state"""
+    """Get or generate a stable device ID, persists via file or Firebase"""
     if 'device_id' not in st.session_state:
-        st.session_state.device_id = create_device_fingerprint()
+        # Check local file for non-cloud environments
+        if not is_cloud() and os.path.exists(DEVICE_ID_FILE):
+            with open(DEVICE_ID_FILE, "r") as f:
+                st.session_state.device_id = f.read().strip()
+        else:
+            # Check Firebase for registered device
+            try:
+                FirebaseFunctions.initialize_firebase()
+                client_data = FirebaseFunctions.get_registration_by_device_id(st.session_state.get('device_id', None))
+                if client_data and client_data.get("ClientDeviceId"):
+                    st.session_state.device_id = client_data["ClientDeviceId"]
+                else:
+                    # Generate new ID and save to file (non-cloud)
+                    st.session_state.device_id = create_device_fingerprint()
+                    if not is_cloud():
+                        with open(DEVICE_ID_FILE, "w") as f:
+                            f.write(st.session_state.device_id)
+            except Exception as e:
+                st.session_state.error_log.append(f"{datetime.datetime.now()}: Device ID retrieval error: {e}")
+                st.session_state.device_id = create_device_fingerprint()
         if 'error_log' in st.session_state:
-            st.session_state.error_log.append(f"{datetime.datetime.now()}: Generated stable device ID: {st.session_state.device_id}")
+            st.session_state.error_log.append(f"{datetime.datetime.now()}: Using device ID: {st.session_state.device_id}")
     return st.session_state.device_id
 
 def clear_device_id():
     """Clear on logout"""
     if 'device_id' in st.session_state:
         del st.session_state.device_id
+    if not is_cloud() and os.path.exists(DEVICE_ID_FILE):
+        os.remove(DEVICE_ID_FILE)
     if 'error_log' in st.session_state:
         st.session_state.error_log.append(f"{datetime.datetime.now()}: Cleared device ID")
 

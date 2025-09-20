@@ -1,6 +1,7 @@
 import base64
 import datetime
 import os
+import socket
 import time
 import uuid
 import string
@@ -32,268 +33,356 @@ DEVICE_ID_FILE = ".device_fingerprint"
 # -------------------------------
 # Enhanced Device Identification Functions
 # -------------------------------
-def get_hardware_info():
-    """Get comprehensive hardware information for device fingerprinting"""
+def get_network_interfaces_detailed():
+    """Get detailed network interface information with multiple methods"""
+    interfaces = {}
+    
     try:
-        # Get system information
-        system_info = {
-            'platform': platform.platform(),
-            'processor': platform.processor(),
-            'architecture': platform.architecture()[0],
-            'machine': platform.machine(),
-            'node': platform.node()
-        }
-        
-        # Get disk serial numbers (most reliable identifier)
-        disk_serials = []
-        try:
-            for disk in psutil.disk_partitions():
-                if 'fixed' in disk.opts:  # Only physical drives
-                    try:
-                        if platform.system() == "Windows":
-                            # Windows: Get disk serial using wmic
-                            result = subprocess.run(
-                                ['wmic', 'diskdrive', 'get', 'serialnumber', '/format:value'],
-                                capture_output=True, text=True, timeout=10
-                            )
-                            for line in result.stdout.split('\n'):
-                                if 'SerialNumber=' in line and line.strip() != 'SerialNumber=':
-                                    serial = line.split('=')[1].strip()
-                                    if serial and serial not in disk_serials:
-                                        disk_serials.append(serial)
-                        else:
-                            # Linux/Mac: Use lsblk or system_profiler
-                            if platform.system() == "Linux":
-                                result = subprocess.run(
-                                    ['lsblk', '-d', '-n', '-o', 'SERIAL'],
-                                    capture_output=True, text=True, timeout=10
-                                )
-                                for serial in result.stdout.split('\n'):
-                                    serial = serial.strip()
-                                    if serial and serial not in disk_serials:
-                                        disk_serials.append(serial)
-                            elif platform.system() == "Darwin":  # macOS
-                                result = subprocess.run(
-                                    ['system_profiler', 'SPSerialATADataType'],
-                                    capture_output=True, text=True, timeout=10
-                                )
-                                # Parse macOS output for serial numbers
-                                lines = result.stdout.split('\n')
-                                for line in lines:
-                                    if 'Serial Number:' in line:
-                                        serial = line.split(':', 1)[1].strip()
-                                        if serial and serial not in disk_serials:
-                                            disk_serials.append(serial)
-                    except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError):
-                        continue
-        except Exception:
-            pass
-        
-        # Get CPU information
-        cpu_info = ""
-        try:
-            if platform.system() == "Windows":
-                result = subprocess.run(
-                    ['wmic', 'cpu', 'get', 'ProcessorId', '/format:value'],
-                    capture_output=True, text=True, timeout=10
-                )
-                for line in result.stdout.split('\n'):
-                    if 'ProcessorId=' in line:
-                        cpu_info = line.split('=')[1].strip()
-                        break
-            else:
-                # For Linux/Mac, use /proc/cpuinfo or system_profiler
-                if os.path.exists('/proc/cpuinfo'):
-                    with open('/proc/cpuinfo', 'r') as f:
-                        for line in f:
-                            if 'serial' in line.lower():
-                                cpu_info = line.split(':', 1)[1].strip()
-                                break
-        except Exception:
-            pass
-        
-        return {
-            'system': system_info,
-            'disk_serials': disk_serials,
-            'cpu_info': cpu_info
-        }
-        
-    except Exception as e:
-        if 'error_log' in st.session_state:
-            st.session_state.error_log.append(f"{datetime.datetime.now()}: Error getting hardware info: {str(e)}")
-        return None
-
-def get_real_mac_addresses():
-    """Get all real MAC addresses from network interfaces"""
-    mac_addresses = []
-    try:
-        # Method 1: Using psutil (most reliable)
+        # Method 1: psutil - most reliable for most systems
         for interface_name, interface_addresses in psutil.net_if_addrs().items():
             for address in interface_addresses:
-                if address.family == psutil.AF_LINK:  # MAC address family
-                    mac = address.address
-                    # Filter out virtual/invalid MACs
-                    if (mac and mac != '00:00:00:00:00:00' and 
-                        not mac.startswith('00:15:5d') and  # Hyper-V
-                        not mac.startswith('00:50:56') and  # VMware
-                        not mac.startswith('08:00:27') and  # VirtualBox
-                        not mac.startswith('00:0c:29') and  # VMware
-                        not mac.startswith('00:1c:42')):    # Parallels
-                        mac_addresses.append(mac.upper().replace('-', ':'))
+                if hasattr(address, 'family') and hasattr(psutil, 'AF_LINK'):
+                    if address.family == psutil.AF_LINK:  # MAC address family
+                        mac = address.address
+                        if mac and mac != '00:00:00:00:00:00':
+                            interfaces[f"psutil_{interface_name}"] = mac.upper().replace('-', ':')
         
-        # Method 2: Fallback using uuid.getnode() with validation
-        if not mac_addresses:
-            node = uuid.getnode()
-            if node != 0x0000000000000000:  # Valid node
-                mac = ':'.join(('%012X' % node)[i:i+2] for i in range(0, 12, 2))
-                mac_addresses.append(mac)
+        # Method 2: uuid.getnode() - universal fallback
+        node = uuid.getnode()
+        if node and node != 0x0000000000000000:
+            mac_from_node = ':'.join(('%012X' % node)[i:i+2] for i in range(0, 12, 2))
+            interfaces["uuid_node"] = mac_from_node
         
-        # Method 3: System-specific commands as last resort
-        if not mac_addresses:
+        # Method 3: System-specific commands
+        system = platform.system().lower()
+        
+        if system == "windows":
             try:
-                if platform.system() == "Windows":
-                    result = subprocess.run(['getmac', '/fo', 'csv', '/nh'], 
-                                          capture_output=True, text=True, timeout=10)
-                    for line in result.stdout.split('\n'):
-                        if line.strip():
-                            mac = line.split(',')[0].strip('"')
-                            if mac and mac != 'N/A':
-                                mac_addresses.append(mac.upper().replace('-', ':'))
-                elif platform.system() in ["Linux", "Darwin"]:
-                    result = subprocess.run(['ifconfig'], capture_output=True, text=True, timeout=10)
+                result = subprocess.run(['getmac', '/fo', 'csv', '/nh'], 
+                                      capture_output=True, text=True, timeout=10)
+                lines = result.stdout.strip().split('\n')
+                for i, line in enumerate(lines):
+                    if line.strip():
+                        parts = line.split(',')
+                        if len(parts) > 0:
+                            mac = parts[0].strip('"').strip()
+                            if mac and mac.upper() != 'N/A':
+                                interfaces[f"windows_cmd_{i}"] = mac.upper().replace('-', ':')
+            except:
+                pass
+                
+        elif system == "linux":
+            try:
+                # Try multiple approaches for Linux
+                approaches = [
+                    ['ip', 'link', 'show'],
+                    ['ifconfig'],
+                    ['cat', '/sys/class/net/*/address']
+                ]
+                
+                for j, cmd in enumerate(approaches):
+                    try:
+                        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+                        if result.returncode == 0:
+                            import re
+                            # Find all MAC addresses in output
+                            mac_pattern = r'([0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}'
+                            macs = re.findall(mac_pattern, result.stdout)
+                            for i, mac_match in enumerate(macs):
+                                if isinstance(mac_match, tuple):
+                                    mac = ''.join(mac_match) + result.stdout[result.stdout.find(''.join(mac_match)):result.stdout.find(''.join(mac_match))+2]
+                                else:
+                                    mac = mac_match
+                                mac_clean = mac.replace('-', ':').upper()
+                                if mac_clean != '00:00:00:00:00:00':
+                                    interfaces[f"linux_cmd_{j}_{i}"] = mac_clean
+                        break
+                    except:
+                        continue
+            except:
+                pass
+                
+        elif system == "darwin":  # macOS
+            try:
+                result = subprocess.run(['ifconfig'], capture_output=True, text=True, timeout=10)
+                if result.returncode == 0:
                     import re
-                    macs = re.findall(r'([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})', result.stdout)
-                    for mac_match in macs:
-                        mac = ''.join(mac_match).upper().replace('-', ':')
-                        if mac not in mac_addresses:
-                            mac_addresses.append(mac)
-            except Exception:
+                    # Find all MAC addresses in ifconfig output
+                    mac_pattern = r'ether\s+([0-9a-fA-F]{2}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2})'
+                    macs = re.findall(mac_pattern, result.stdout)
+                    for i, mac in enumerate(macs):
+                        interfaces[f"darwin_cmd_{i}"] = mac.upper()
+            except:
+                pass
+    
+    except Exception as e:
+        if 'error_log' in st.session_state:
+            st.session_state.error_log.append(f"Interface detection error: {str(e)}")
+    
+    return interfaces
+
+def get_system_identifiers():
+    """Get additional system identifiers"""
+    identifiers = {}
+    
+    try:
+        # Basic system info
+        identifiers['platform'] = platform.platform()
+        identifiers['processor'] = platform.processor()
+        identifiers['machine'] = platform.machine()
+        identifiers['node'] = platform.node()
+        
+        # Try to get more unique identifiers
+        system = platform.system().lower()
+        
+        if system == "windows":
+            try:
+                # Get Windows system UUID
+                result = subprocess.run(['wmic', 'csproduct', 'get', 'UUID'], 
+                                      capture_output=True, text=True, timeout=10)
+                for line in result.stdout.split('\n'):
+                    line = line.strip()
+                    if line and line.upper() != 'UUID' and len(line) > 10:
+                        identifiers['windows_uuid'] = line
+                        break
+            except:
+                pass
+                
+        elif system == "linux":
+            try:
+                # Try to get machine-id
+                if os.path.exists('/etc/machine-id'):
+                    with open('/etc/machine-id', 'r') as f:
+                        identifiers['machine_id'] = f.read().strip()
+                elif os.path.exists('/var/lib/dbus/machine-id'):
+                    with open('/var/lib/dbus/machine-id', 'r') as f:
+                        identifiers['machine_id'] = f.read().strip()
+            except:
+                pass
+                
+        elif system == "darwin":
+            try:
+                # Get macOS hardware UUID
+                result = subprocess.run(['system_profiler', 'SPHardwareDataType'], 
+                                      capture_output=True, text=True, timeout=10)
+                for line in result.stdout.split('\n'):
+                    if 'Hardware UUID:' in line:
+                        identifiers['hardware_uuid'] = line.split(':', 1)[1].strip()
+                        break
+            except:
                 pass
         
-        return list(set(mac_addresses))  # Remove duplicates
-        
+        # Get hostname as additional identifier
+        try:
+            identifiers['hostname'] = socket.gethostname()
+        except:
+            pass
+            
     except Exception as e:
         if 'error_log' in st.session_state:
-            st.session_state.error_log.append(f"{datetime.datetime.now()}: Error getting MAC addresses: {str(e)}")
-        return []
+            st.session_state.error_log.append(f"System identifier error: {str(e)}")
+    
+    return identifiers
 
-def generate_device_fingerprint():
-    """Generate a unique device fingerprint combining multiple hardware identifiers"""
-    try:
-        # Get hardware information
-        hardware_info = get_hardware_info()
-        mac_addresses = get_real_mac_addresses()
+def filter_virtual_macs(interfaces):
+    """Filter out virtual/invalid MAC addresses"""
+    virtual_prefixes = [
+        '00:15:5D',  # Hyper-V
+        '00:50:56',  # VMware
+        '08:00:27',  # VirtualBox
+        '00:0C:29',  # VMware
+        '00:1C:42',  # Parallels
+        '02:00:00',  # Common virtual prefix
+        '00:00:00',  # Invalid
+    ]
+    
+    real_interfaces = {}
+    for key, mac in interfaces.items():
+        is_virtual = False
+        for prefix in virtual_prefixes:
+            if mac.upper().startswith(prefix):
+                is_virtual = True
+                break
         
-        # Create fingerprint components
-        fingerprint_components = []
-        
-        # Add MAC addresses (primary identifier)
-        if mac_addresses:
-            # Sort to ensure consistent ordering
-            fingerprint_components.extend(sorted(mac_addresses))
-        
-        # Add hardware info if available
-        if hardware_info:
-            if hardware_info['disk_serials']:
-                fingerprint_components.extend(sorted(hardware_info['disk_serials']))
-            
-            if hardware_info['cpu_info']:
-                fingerprint_components.append(hardware_info['cpu_info'])
-            
-            # Add system info
-            system = hardware_info['system']
-            fingerprint_components.extend([
-                system.get('processor', ''),
-                system.get('machine', ''),
-                system.get('node', '')
-            ])
-        
-        # Filter out empty components
-        fingerprint_components = [comp for comp in fingerprint_components if comp]
-        
-        if not fingerprint_components:
-            raise ValueError("No hardware identifiers found")
-        
-        # Create hash of all components
-        fingerprint_string = '|'.join(fingerprint_components)
-        device_hash = hashlib.sha256(fingerprint_string.encode()).hexdigest()
-        
-        # Return both the primary MAC and the device fingerprint
-        primary_mac = mac_addresses[0] if mac_addresses else "UNKNOWN"
-        
-        return {
-            'primary_mac': primary_mac,
-            'device_fingerprint': device_hash,
-            'all_macs': mac_addresses,
-            'components_count': len(fingerprint_components)
-        }
-        
-    except Exception as e:
-        if 'error_log' in st.session_state:
-            st.session_state.error_log.append(f"{datetime.datetime.now()}: Error generating device fingerprint: {str(e)}")
-        return None
+        if not is_virtual and mac != '00:00:00:00:00:00':
+            real_interfaces[key] = mac
+    
+    return real_interfaces
+
+def create_device_fingerprint():
+    """Create a comprehensive device fingerprint"""
+    # Get network interfaces
+    interfaces = get_network_interfaces_detailed()
+    real_interfaces = filter_virtual_macs(interfaces)
+    
+    # Get system identifiers
+    system_ids = get_system_identifiers()
+    
+    # Combine all identifiers
+    all_identifiers = []
+    
+    # Add MAC addresses (primary identifiers)
+    if real_interfaces:
+        # Sort to ensure consistent ordering
+        sorted_macs = sorted(real_interfaces.values())
+        all_identifiers.extend(sorted_macs)
+    
+    # Add system identifiers
+    for key in sorted(system_ids.keys()):
+        value = system_ids[key]
+        if value:
+            all_identifiers.append(f"{key}:{value}")
+    
+    # If no identifiers found, generate a truly random one based on current time and random data
+    if not all_identifiers:
+        import random
+        import time
+        random_data = f"{time.time()}_{random.randint(100000, 999999)}_{uuid.uuid4()}"
+        all_identifiers.append(random_data)
+    
+    # Create hash of all identifiers
+    fingerprint_string = '|'.join(all_identifiers)
+    device_hash = hashlib.sha256(fingerprint_string.encode()).hexdigest()
+    
+    # Get primary MAC (or create one from hash if no real MACs found)
+    if real_interfaces:
+        primary_mac = sorted(real_interfaces.values())[0]
+    else:
+        # Generate a consistent "MAC-like" identifier from the hash
+        hex_chars = device_hash[:12]
+        primary_mac = ':'.join(hex_chars[i:i+2] for i in range(0, 12, 2)).upper()
+    
+    return {
+        'primary_mac': primary_mac,
+        'device_hash': device_hash,
+        'interfaces': real_interfaces,
+        'system_ids': system_ids,
+        'identifier_count': len(all_identifiers),
+        'fingerprint_data': fingerprint_string
+    }
 
 def get_stable_device_id():
-    """Get a stable device ID that persists across sessions"""
-    try:
-        # Check if device fingerprint file exists
-        if os.path.exists(DEVICE_ID_FILE):
-            try:
-                with open(DEVICE_ID_FILE, "r") as f:
-                    saved_data = f.read().strip()
-                    if saved_data:
-                        # Parse saved data
-                        lines = saved_data.split('\n')
-                        saved_fingerprint = {}
-                        for line in lines:
-                            if '=' in line:
-                                key, value = line.split('=', 1)
-                                saved_fingerprint[key] = value
-                        
-                        # Verify current hardware matches saved fingerprint
-                        current_fingerprint = generate_device_fingerprint()
-                        if current_fingerprint:
-                            # Check if primary identifiers match
-                            if (saved_fingerprint.get('primary_mac') == current_fingerprint['primary_mac'] or
-                                saved_fingerprint.get('device_fingerprint') == current_fingerprint['device_fingerprint']):
-                                return saved_fingerprint.get('primary_mac', saved_fingerprint.get('device_fingerprint'))
-                            else:
-                                st.warning("Hardware change detected. Device fingerprint will be updated.")
-            except Exception as e:
-                if 'error_log' in st.session_state:
-                    st.session_state.error_log.append(f"{datetime.datetime.now()}: Error reading saved device ID: {str(e)}")
-        
-        # Generate new fingerprint
-        current_fingerprint = generate_device_fingerprint()
-        if not current_fingerprint:
-            raise ValueError("Failed to generate device fingerprint")
-        
-        # Save the new fingerprint
+    """Get or create a stable device ID"""
+    device_specific_path = DEVICE_ID_FILE
+    
+    # Try to load existing fingerprint
+    if os.path.exists(device_specific_path):
         try:
-            fingerprint_data = f"""primary_mac={current_fingerprint['primary_mac']}
-device_fingerprint={current_fingerprint['device_fingerprint']}
-all_macs={','.join(current_fingerprint['all_macs'])}
-components_count={current_fingerprint['components_count']}
-created_at={datetime.datetime.now().isoformat()}
-"""
-            with open(DEVICE_ID_FILE, "w") as f:
-                f.write(fingerprint_data)
+            with open(device_specific_path, 'r') as f:
+                saved_data = json.loads(f.read())
+                
+            # Verify the saved fingerprint is still valid
+            current_fingerprint = create_device_fingerprint()
+            
+            # Check if any of the key identifiers match
+            saved_interfaces = saved_data.get('interfaces', {})
+            current_interfaces = current_fingerprint['interfaces']
+            
+            # If at least 50% of interfaces match, consider it the same device
+            if saved_interfaces and current_interfaces:
+                common_macs = set(saved_interfaces.values()) & set(current_interfaces.values())
+                total_saved = len(saved_interfaces)
+                if len(common_macs) >= max(1, total_saved // 2):
+                    # Device matches, return saved MAC
+                    return saved_data.get('primary_mac', current_fingerprint['primary_mac'])
+            
+            # If system identifiers match significantly, consider it the same device
+            saved_system = saved_data.get('system_ids', {})
+            current_system = current_fingerprint['system_ids']
+            
+            matching_system_ids = 0
+            for key, value in saved_system.items():
+                if current_system.get(key) == value:
+                    matching_system_ids += 1
+            
+            if matching_system_ids >= 2:  # At least 2 system identifiers match
+                return saved_data.get('primary_mac', current_fingerprint['primary_mac'])
+            
+            # If we reach here, this might be a different device or hardware changed
+            st.warning("Hardware changes detected. Creating new device fingerprint.")
+            
         except Exception as e:
-            st.warning(f"Failed to save device fingerprint: {e}")
+            if 'error_log' in st.session_state:
+                st.session_state.error_log.append(f"Error reading saved fingerprint: {str(e)}")
+    
+    # Create new fingerprint
+    fingerprint = create_device_fingerprint()
+    
+    # Save the fingerprint
+    try:
+        save_data = {
+            'primary_mac': fingerprint['primary_mac'],
+            'device_hash': fingerprint['device_hash'],
+            'interfaces': fingerprint['interfaces'],
+            'system_ids': fingerprint['system_ids'],
+            'created_at': datetime.datetime.now().isoformat(),
+            'platform': platform.system(),
+            'identifier_count': fingerprint['identifier_count']
+        }
         
-        return current_fingerprint['primary_mac']
-        
+        with open(device_specific_path, 'w') as f:
+            f.write(json.dumps(save_data, indent=2))
+            
     except Exception as e:
         if 'error_log' in st.session_state:
-            st.session_state.error_log.append(f"{datetime.datetime.now()}: Critical error in get_stable_device_id: {str(e)}")
-        # Ultimate fallback: generate a temporary UUID
-        fallback_id = str(uuid.uuid4())
-        st.error(f"Using temporary device ID due to hardware detection failure: {e}")
-        return fallback_id
+            st.session_state.error_log.append(f"Error saving fingerprint: {str(e)}")
+        st.warning(f"Could not save device fingerprint: {e}")
+    
+    return fingerprint['primary_mac']
 
 def get_mac_address():
-    """Get stable, hardware-based device identifier"""
+    """Main function to get device MAC address"""
     return get_stable_device_id()
+
+# Debug function to test the MAC detection
+def debug_mac_detection():
+    """Debug function to see what identifiers are being detected"""
+    st.subheader("Device Detection Debug")
+    
+    # Show network interfaces
+    interfaces = get_network_interfaces_detailed()
+    st.write("**All Network Interfaces Detected:**")
+    for key, mac in interfaces.items():
+        st.write(f"- {key}: {mac}")
+    
+    # Show filtered interfaces
+    real_interfaces = filter_virtual_macs(interfaces)
+    st.write("**Real (Non-Virtual) Interfaces:**")
+    for key, mac in real_interfaces.items():
+        st.write(f"- {key}: {mac}")
+    
+    # Show system identifiers
+    system_ids = get_system_identifiers()
+    st.write("**System Identifiers:**")
+    for key, value in system_ids.items():
+        st.write(f"- {key}: {value}")
+    
+    # Show final fingerprint
+    fingerprint = create_device_fingerprint()
+    st.write("**Final Device Fingerprint:**")
+    st.write(f"- Primary MAC: {fingerprint['primary_mac']}")
+    st.write(f"- Device Hash: {fingerprint['device_hash'][:16]}...")
+    st.write(f"- Total Identifiers: {fingerprint['identifier_count']}")
+    
+    # Show stable device ID
+    device_id = get_stable_device_id()
+    st.write(f"**Stable Device ID:** {device_id}")
+
+# Test the function
+if __name__ == "__main__":
+    print("Testing MAC address detection...")
+    mac = get_mac_address()
+    print(f"Device MAC: {mac}")
+    
+    print("\nDetailed debug info:")
+    interfaces = get_network_interfaces_detailed()
+    print("All interfaces:", interfaces)
+    
+    real_interfaces = filter_virtual_macs(interfaces)
+    print("Real interfaces:", real_interfaces)
+    
+    system_ids = get_system_identifiers()
+    print("System IDs:", system_ids)
 
 # -------------------------------
 # Firebase License Functions
@@ -1182,7 +1271,7 @@ if st.session_state.app_state == "auth":
                         # Display device info for transparency
                         with st.expander("Device Information", expanded=False):
                             try:
-                                fingerprint_data = generate_device_fingerprint()
+                                fingerprint_data = create_device_fingerprint()
                                 if fingerprint_data:
                                     st.write(f"Primary MAC: {fingerprint_data['primary_mac']}")
                                     st.write(f"All MACs: {', '.join(fingerprint_data['all_macs'])}")

@@ -40,6 +40,7 @@ def create_device_fingerprint():
         return device_hash[:16].upper()
     except Exception:
         return hashlib.sha256(str(uuid.uuid1()).encode()).hexdigest()[:16].upper()
+    
 def _inject_browser_device_js(local_key="device_id_streamlit_app"):
     js = f"""
     <script>
@@ -69,7 +70,7 @@ def _inject_browser_device_js(local_key="device_id_streamlit_app"):
     </script>
     """
     # height=0 keeps it invisible
-    components.html(js, height=0) """
+    components.html(js, height=0) 
 def get_device_id():
     """
     Ensure a stable device id per browser by:
@@ -1278,5 +1279,4 @@ if st.session_state.app_state == "scraping":
         with st.expander("Error Log", expanded=False):
             for log in st.session_state.error_log[-10:]:
                 st.write(log)
-
 

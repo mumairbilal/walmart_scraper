@@ -34,23 +34,17 @@ def create_device_fingerprint():
     return ':'.join([device_hash[i:i+2].upper() for i in range(0, 12, 2)])
 
 def get_device_id():
-    """Get stable device ID per browser/device, persists via session_state and query params"""
+    """Get stable device ID per browser/device, persists via session_state"""
     if 'device_id' not in st.session_state:
-        device_id = create_device_fingerprint()
-        st.session_state.device_id = device_id
-        if 'device_id' in st.query_params and st.query_params['device_id']:
-            st.session_state.device_id = st.query_params['device_id']
-        else:
-            st.query_params['device_id'] = device_id
+        st.session_state.device_id = create_device_fingerprint()
         if 'error_log' in st.session_state:
-            st.session_state.error_log.append(f"{datetime.datetime.now()}: Generated stable device ID: {device_id}")
+            st.session_state.error_log.append(f"{datetime.datetime.now()}: Generated stable device ID: {st.session_state.device_id}")
     return st.session_state.device_id
 
 def clear_device_id():
     """Clear on logout"""
     if 'device_id' in st.session_state:
         del st.session_state.device_id
-    st.query_params.clear()
     if 'error_log' in st.session_state:
         st.session_state.error_log.append(f"{datetime.datetime.now()}: Cleared device ID")
 
@@ -285,9 +279,6 @@ def validate_new_registration(email, device_id):
     existing_email = FirebaseFunctions.get_client_data_by_email(email)
     if existing_email:
         return False, "Email already exists. Login with existing key."
-    existing_device = FirebaseFunctions.get_registration_by_device_id(device_id)
-    if existing_device:
-        return False, f"Device registered to {existing_device.get('ClientEmail', 'Unknown')}. Login or contact support."
     return True, "OK"
 
 # Initialize Firebase
@@ -344,59 +335,64 @@ if "rate_limit_delay" not in st.session_state:
 
 # Auto-login with device ID
 if st.session_state.app_state == "auth" and st.session_state.user_data is None:
-    device_id = get_device_id()
-    client_data = FirebaseFunctions.get_registration_by_device_id(device_id)
-    if client_data:
-        with st.spinner("Auto-validating device..."):
-            is_eligible, client_data = check_license_eligibility(client_data.get("LicenseKey", ""), "walmart_scraper", device_id)
-            if is_eligible:
-                st.session_state.user_data = client_data
-                st.session_state.license_valid = True
-                st.session_state.app_state = "scraping"
-                st.session_state.firecrawl_api_key = client_data.get("FirecrawlApiKey", "")
-                plan = client_data.get("Plan", "Free").lower()
-                if any(word in plan for word in ["basic", "premium", "enterprise"]):
-                    st.session_state.user_tier = "premium"
-                else:
-                    st.session_state.user_tier = "free"
-                st.session_state.daily_urls_used = client_data.get("DailyUrlCount", 0)
-                st.session_state.local_scraped_count = 0
-                st.session_state.pending_quota_updates = []
-                if should_reset_daily_count(client_data):
-                    FirebaseFunctions.reset_daily_url_count(client_data.get("LicenseKey", ""))
-                    st.session_state.daily_urls_used = 0
-                    st.session_state.local_scraped_count = 0
-                st.rerun()
-    # Fallback to saved license file if no Firebase match
-    if os.path.exists(LOCAL_LICENSE_FILE) and not is_cloud():
-        with open(LOCAL_LICENSE_FILE, "r") as f:
-            saved_key = f.read().strip()
-        if saved_key:
-            with st.spinner("Auto-validating saved license..."):
-                try:
-                    is_eligible, client_data = check_license_eligibility(saved_key, "walmart_scraper", device_id)
-                    if is_eligible:
-                        st.session_state.user_data = client_data
-                        st.session_state.license_valid = True
-                        st.session_state.app_state = "scraping"
-                        st.session_state.firecrawl_api_key = client_data.get("FirecrawlApiKey", "")
-                        plan = client_data.get("Plan", "Free").lower()
-                        if any(word in plan for word in ["basic", "premium", "enterprise"]):
-                            st.session_state.user_tier = "premium"
-                        else:
-                            st.session_state.user_tier = "free"
-                        st.session_state.daily_urls_used = client_data.get("DailyUrlCount", 0)
-                        st.session_state.local_scraped_count = 0
-                        st.session_state.pending_quota_updates = []
-                        if should_reset_daily_count(client_data):
-                            FirebaseFunctions.reset_daily_url_count(saved_key)
-                            st.session_state.daily_urls_used = 0
-                            st.session_state.local_scraped_count = 0
-                        st.rerun()
+    try:
+        device_id = get_device_id()
+        client_data = FirebaseFunctions.get_registration_by_device_id(device_id)
+        if client_data:
+            with st.spinner("Auto-validating device..."):
+                is_eligible, client_data = check_license_eligibility(client_data.get("LicenseKey", ""), "walmart_scraper", device_id)
+                if is_eligible:
+                    st.session_state.user_data = client_data
+                    st.session_state.license_valid = True
+                    st.session_state.app_state = "scraping"
+                    st.session_state.firecrawl_api_key = client_data.get("FirecrawlApiKey", "")
+                    plan = client_data.get("Plan", "Free").lower()
+                    if any(word in plan for word in ["basic", "premium", "enterprise"]):
+                        st.session_state.user_tier = "premium"
                     else:
-                        os.remove(LOCAL_LICENSE_FILE)
-                except Exception as e:
-                    st.session_state.error_log.append(f"{datetime.datetime.now()}: Auto-login error: {e}")
+                        st.session_state.user_tier = "free"
+                    st.session_state.daily_urls_used = client_data.get("DailyUrlCount", 0)
+                    st.session_state.local_scraped_count = 0
+                    st.session_state.pending_quota_updates = []
+                    if should_reset_daily_count(client_data):
+                        FirebaseFunctions.reset_daily_url_count(client_data.get("LicenseKey", ""))
+                        st.session_state.daily_urls_used = 0
+                        st.session_state.local_scraped_count = 0
+                    st.rerun()
+        # Fallback to saved license file if no Firebase match
+        if os.path.exists(LOCAL_LICENSE_FILE) and not is_cloud():
+            with open(LOCAL_LICENSE_FILE, "r") as f:
+                saved_key = f.read().strip()
+            if saved_key:
+                with st.spinner("Auto-validating saved license..."):
+                    try:
+                        is_eligible, client_data = check_license_eligibility(saved_key, "walmart_scraper", device_id)
+                        if is_eligible:
+                            st.session_state.user_data = client_data
+                            st.session_state.license_valid = True
+                            st.session_state.app_state = "scraping"
+                            st.session_state.firecrawl_api_key = client_data.get("FirecrawlApiKey", "")
+                            plan = client_data.get("Plan", "Free").lower()
+                            if any(word in plan for word in ["basic", "premium", "enterprise"]):
+                                st.session_state.user_tier = "premium"
+                            else:
+                                st.session_state.user_tier = "free"
+                            st.session_state.daily_urls_used = client_data.get("DailyUrlCount", 0)
+                            st.session_state.local_scraped_count = 0
+                            st.session_state.pending_quota_updates = []
+                            if should_reset_daily_count(client_data):
+                                FirebaseFunctions.reset_daily_url_count(saved_key)
+                                st.session_state.daily_urls_used = 0
+                                st.session_state.local_scraped_count = 0
+                            st.rerun()
+                        else:
+                            os.remove(LOCAL_LICENSE_FILE)
+                    except Exception as e:
+                        st.session_state.error_log.append(f"{datetime.datetime.now()}: Auto-login error: {e}")
+    except Exception as e:
+        st.error("JavaScript is required to run this app. Please enable JavaScript in your browser or contact support.")
+        st.session_state.error_log.append(f"{datetime.datetime.now()}: Auto-login error: {e}")
+        st.stop()
 
 # CSS
 st.markdown("""
@@ -868,7 +864,8 @@ if st.session_state.app_state == "auth":
         try:
             device_id = get_device_id()
         except Exception as e:
-            st.error(f"Device validation failed: {e}")
+            st.error("JavaScript is required to run this app. Please enable JavaScript in your browser or contact support.")
+            st.session_state.error_log.append(f"{datetime.datetime.now()}: Device validation error: {e}")
             st.stop()
         license_key = st.text_input("License Key", type="password", placeholder="Enter your license key")
         st.text_input("Device ID", value=device_id, disabled=True, 
@@ -1192,17 +1189,3 @@ if st.session_state.app_state == "scraping":
         with st.expander("Error Log", expanded=False):
             for log in st.session_state.error_log[-10:]:
                 st.write(log)
-                
-    # Tutorial and Footer
-    st.markdown("---")
-    st.subheader("Tutorial Video")
-    st.video("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
-    st.markdown("---")
-    st.markdown("""
-    <div style="text-align: center; font-size: 14px; padding: 20px 0;">
-        <strong>Umisoft Walmart Scraper</strong><br>
-        Empower your business with real-time product insights.<br>
-        Premium features include unlimited scraping and dedicated support.<br>
-        Contact: <a href="mailto:support@umisoft.com" style="text-decoration: none;">support@umisoft.com</a> | © 2025 Umisoft Ltd. | Version 2.0
-    </div>
-    """, unsafe_allow_html=True)

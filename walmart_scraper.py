@@ -31,6 +31,16 @@ PLAN_LIMITS = {
 LOCAL_LICENSE_FILE = ".walmart_scraper_license"
 DEVICE_ID_FILE = ".device_fingerprint"
 
+import uuid
+import os
+import datetime
+import hashlib
+import time
+import random
+import platform
+import streamlit as st
+import tempfile
+
 def get_system_unique_path():
     """Get a system-specific path that won't be synced between devices"""
     system = platform.system().lower()
@@ -242,10 +252,10 @@ if __name__ == "__main__":
     print(f"System: {platform.system()}")
     print(f"Device ID path: {get_system_unique_path()}")
     
-    # Test multiple generations
+    # Test multiple generations - FIX: unpack 3 values
     ids = []
     for i in range(5):
-        device_id, full_hash, _ = create_truly_unique_device_id()
+        device_id, full_hash, entropy = create_truly_unique_device_id()  # Fixed: 3 values
         ids.append(device_id)
         print(f"ID {i+1}: {device_id}")
         time.sleep(0.001)  # Small delay to ensure different timestamps
@@ -259,6 +269,12 @@ if __name__ == "__main__":
     persistent_id = get_or_create_device_id()
     print(f"\nPersistent ID: {persistent_id}")
     print(f"Same persistent ID: {get_or_create_device_id()}")
+
+# Fixed helper function for backward compatibility
+def create_simple_device_id():
+    """Backward compatible version that returns only 2 values"""
+    device_id, full_hash, _ = create_truly_unique_device_id()
+    return device_id, full_hash
 
 def verify_device_uniqueness():
     """Function to verify device ID is truly unique (for testing)"""
@@ -1707,3 +1723,4 @@ if st.session_state.app_state == "scraping":
         Contact: <a href="mailto:support@umisoft.com" style="text-decoration: none;">support@umisoft.com</a> | © 2025 Umisoft Ltd. | Version 2.0
     </div>
     """, unsafe_allow_html=True)
+

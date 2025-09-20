@@ -14,6 +14,10 @@ from firebase_admin import credentials, firestore
 import json
 from streamlit_option_menu import option_menu
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import psutil
+import hashlib
+import platform
+import subprocess
 
 PLAN_LIMITS = {
     "Free": {"daily_limit": 50, "valid_days": 7},
@@ -23,7 +27,273 @@ PLAN_LIMITS = {
 }
 
 LOCAL_LICENSE_FILE = ".walmart_scraper_license"
-DEVICE_ID_FILE = ".device_id"
+DEVICE_ID_FILE = ".device_fingerprint"
+
+# -------------------------------
+# Enhanced Device Identification Functions
+# -------------------------------
+def get_hardware_info():
+    """Get comprehensive hardware information for device fingerprinting"""
+    try:
+        # Get system information
+        system_info = {
+            'platform': platform.platform(),
+            'processor': platform.processor(),
+            'architecture': platform.architecture()[0],
+            'machine': platform.machine(),
+            'node': platform.node()
+        }
+        
+        # Get disk serial numbers (most reliable identifier)
+        disk_serials = []
+        try:
+            for disk in psutil.disk_partitions():
+                if 'fixed' in disk.opts:  # Only physical drives
+                    try:
+                        if platform.system() == "Windows":
+                            # Windows: Get disk serial using wmic
+                            result = subprocess.run(
+                                ['wmic', 'diskdrive', 'get', 'serialnumber', '/format:value'],
+                                capture_output=True, text=True, timeout=10
+                            )
+                            for line in result.stdout.split('\n'):
+                                if 'SerialNumber=' in line and line.strip() != 'SerialNumber=':
+                                    serial = line.split('=')[1].strip()
+                                    if serial and serial not in disk_serials:
+                                        disk_serials.append(serial)
+                        else:
+                            # Linux/Mac: Use lsblk or system_profiler
+                            if platform.system() == "Linux":
+                                result = subprocess.run(
+                                    ['lsblk', '-d', '-n', '-o', 'SERIAL'],
+                                    capture_output=True, text=True, timeout=10
+                                )
+                                for serial in result.stdout.split('\n'):
+                                    serial = serial.strip()
+                                    if serial and serial not in disk_serials:
+                                        disk_serials.append(serial)
+                            elif platform.system() == "Darwin":  # macOS
+                                result = subprocess.run(
+                                    ['system_profiler', 'SPSerialATADataType'],
+                                    capture_output=True, text=True, timeout=10
+                                )
+                                # Parse macOS output for serial numbers
+                                lines = result.stdout.split('\n')
+                                for line in lines:
+                                    if 'Serial Number:' in line:
+                                        serial = line.split(':', 1)[1].strip()
+                                        if serial and serial not in disk_serials:
+                                            disk_serials.append(serial)
+                    except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError):
+                        continue
+        except Exception:
+            pass
+        
+        # Get CPU information
+        cpu_info = ""
+        try:
+            if platform.system() == "Windows":
+                result = subprocess.run(
+                    ['wmic', 'cpu', 'get', 'ProcessorId', '/format:value'],
+                    capture_output=True, text=True, timeout=10
+                )
+                for line in result.stdout.split('\n'):
+                    if 'ProcessorId=' in line:
+                        cpu_info = line.split('=')[1].strip()
+                        break
+            else:
+                # For Linux/Mac, use /proc/cpuinfo or system_profiler
+                if os.path.exists('/proc/cpuinfo'):
+                    with open('/proc/cpuinfo', 'r') as f:
+                        for line in f:
+                            if 'serial' in line.lower():
+                                cpu_info = line.split(':', 1)[1].strip()
+                                break
+        except Exception:
+            pass
+        
+        return {
+            'system': system_info,
+            'disk_serials': disk_serials,
+            'cpu_info': cpu_info
+        }
+        
+    except Exception as e:
+        if 'error_log' in st.session_state:
+            st.session_state.error_log.append(f"{datetime.datetime.now()}: Error getting hardware info: {str(e)}")
+        return None
+
+def get_real_mac_addresses():
+    """Get all real MAC addresses from network interfaces"""
+    mac_addresses = []
+    try:
+        # Method 1: Using psutil (most reliable)
+        for interface_name, interface_addresses in psutil.net_if_addrs().items():
+            for address in interface_addresses:
+                if address.family == psutil.AF_LINK:  # MAC address family
+                    mac = address.address
+                    # Filter out virtual/invalid MACs
+                    if (mac and mac != '00:00:00:00:00:00' and 
+                        not mac.startswith('00:15:5d') and  # Hyper-V
+                        not mac.startswith('00:50:56') and  # VMware
+                        not mac.startswith('08:00:27') and  # VirtualBox
+                        not mac.startswith('00:0c:29') and  # VMware
+                        not mac.startswith('00:1c:42')):    # Parallels
+                        mac_addresses.append(mac.upper().replace('-', ':'))
+        
+        # Method 2: Fallback using uuid.getnode() with validation
+        if not mac_addresses:
+            node = uuid.getnode()
+            if node != 0x0000000000000000:  # Valid node
+                mac = ':'.join(('%012X' % node)[i:i+2] for i in range(0, 12, 2))
+                mac_addresses.append(mac)
+        
+        # Method 3: System-specific commands as last resort
+        if not mac_addresses:
+            try:
+                if platform.system() == "Windows":
+                    result = subprocess.run(['getmac', '/fo', 'csv', '/nh'], 
+                                          capture_output=True, text=True, timeout=10)
+                    for line in result.stdout.split('\n'):
+                        if line.strip():
+                            mac = line.split(',')[0].strip('"')
+                            if mac and mac != 'N/A':
+                                mac_addresses.append(mac.upper().replace('-', ':'))
+                elif platform.system() in ["Linux", "Darwin"]:
+                    result = subprocess.run(['ifconfig'], capture_output=True, text=True, timeout=10)
+                    import re
+                    macs = re.findall(r'([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})', result.stdout)
+                    for mac_match in macs:
+                        mac = ''.join(mac_match).upper().replace('-', ':')
+                        if mac not in mac_addresses:
+                            mac_addresses.append(mac)
+            except Exception:
+                pass
+        
+        return list(set(mac_addresses))  # Remove duplicates
+        
+    except Exception as e:
+        if 'error_log' in st.session_state:
+            st.session_state.error_log.append(f"{datetime.datetime.now()}: Error getting MAC addresses: {str(e)}")
+        return []
+
+def generate_device_fingerprint():
+    """Generate a unique device fingerprint combining multiple hardware identifiers"""
+    try:
+        # Get hardware information
+        hardware_info = get_hardware_info()
+        mac_addresses = get_real_mac_addresses()
+        
+        # Create fingerprint components
+        fingerprint_components = []
+        
+        # Add MAC addresses (primary identifier)
+        if mac_addresses:
+            # Sort to ensure consistent ordering
+            fingerprint_components.extend(sorted(mac_addresses))
+        
+        # Add hardware info if available
+        if hardware_info:
+            if hardware_info['disk_serials']:
+                fingerprint_components.extend(sorted(hardware_info['disk_serials']))
+            
+            if hardware_info['cpu_info']:
+                fingerprint_components.append(hardware_info['cpu_info'])
+            
+            # Add system info
+            system = hardware_info['system']
+            fingerprint_components.extend([
+                system.get('processor', ''),
+                system.get('machine', ''),
+                system.get('node', '')
+            ])
+        
+        # Filter out empty components
+        fingerprint_components = [comp for comp in fingerprint_components if comp]
+        
+        if not fingerprint_components:
+            raise ValueError("No hardware identifiers found")
+        
+        # Create hash of all components
+        fingerprint_string = '|'.join(fingerprint_components)
+        device_hash = hashlib.sha256(fingerprint_string.encode()).hexdigest()
+        
+        # Return both the primary MAC and the device fingerprint
+        primary_mac = mac_addresses[0] if mac_addresses else "UNKNOWN"
+        
+        return {
+            'primary_mac': primary_mac,
+            'device_fingerprint': device_hash,
+            'all_macs': mac_addresses,
+            'components_count': len(fingerprint_components)
+        }
+        
+    except Exception as e:
+        if 'error_log' in st.session_state:
+            st.session_state.error_log.append(f"{datetime.datetime.now()}: Error generating device fingerprint: {str(e)}")
+        return None
+
+def get_stable_device_id():
+    """Get a stable device ID that persists across sessions"""
+    try:
+        # Check if device fingerprint file exists
+        if os.path.exists(DEVICE_ID_FILE):
+            try:
+                with open(DEVICE_ID_FILE, "r") as f:
+                    saved_data = f.read().strip()
+                    if saved_data:
+                        # Parse saved data
+                        lines = saved_data.split('\n')
+                        saved_fingerprint = {}
+                        for line in lines:
+                            if '=' in line:
+                                key, value = line.split('=', 1)
+                                saved_fingerprint[key] = value
+                        
+                        # Verify current hardware matches saved fingerprint
+                        current_fingerprint = generate_device_fingerprint()
+                        if current_fingerprint:
+                            # Check if primary identifiers match
+                            if (saved_fingerprint.get('primary_mac') == current_fingerprint['primary_mac'] or
+                                saved_fingerprint.get('device_fingerprint') == current_fingerprint['device_fingerprint']):
+                                return saved_fingerprint.get('primary_mac', saved_fingerprint.get('device_fingerprint'))
+                            else:
+                                st.warning("Hardware change detected. Device fingerprint will be updated.")
+            except Exception as e:
+                if 'error_log' in st.session_state:
+                    st.session_state.error_log.append(f"{datetime.datetime.now()}: Error reading saved device ID: {str(e)}")
+        
+        # Generate new fingerprint
+        current_fingerprint = generate_device_fingerprint()
+        if not current_fingerprint:
+            raise ValueError("Failed to generate device fingerprint")
+        
+        # Save the new fingerprint
+        try:
+            fingerprint_data = f"""primary_mac={current_fingerprint['primary_mac']}
+device_fingerprint={current_fingerprint['device_fingerprint']}
+all_macs={','.join(current_fingerprint['all_macs'])}
+components_count={current_fingerprint['components_count']}
+created_at={datetime.datetime.now().isoformat()}
+"""
+            with open(DEVICE_ID_FILE, "w") as f:
+                f.write(fingerprint_data)
+        except Exception as e:
+            st.warning(f"Failed to save device fingerprint: {e}")
+        
+        return current_fingerprint['primary_mac']
+        
+    except Exception as e:
+        if 'error_log' in st.session_state:
+            st.session_state.error_log.append(f"{datetime.datetime.now()}: Critical error in get_stable_device_id: {str(e)}")
+        # Ultimate fallback: generate a temporary UUID
+        fallback_id = str(uuid.uuid4())
+        st.error(f"Using temporary device ID due to hardware detection failure: {e}")
+        return fallback_id
+
+def get_mac_address():
+    """Get stable, hardware-based device identifier"""
+    return get_stable_device_id()
 
 # -------------------------------
 # Firebase License Functions
@@ -59,17 +329,58 @@ class FirebaseFunctions:
         return all_client_data
     
     @staticmethod
+    def is_mac_already_registered(mac_address):
+        """Check if MAC address is already registered"""
+        try:
+            if FirebaseFunctions._firestore_db is None:
+                FirebaseFunctions.initialize_firebase()
+            
+            clients_ref = FirebaseFunctions._firestore_db.collection("licenses")
+            query = clients_ref.where("ClientMacAddress", "==", mac_address)
+            docs = list(query.stream())
+            
+            return len(docs) > 0
+            
+        except Exception as e:
+            st.session_state.error_log.append(f"{datetime.datetime.now()}: Error checking MAC registration: {e}")
+            return False
+    
+    @staticmethod
+    def get_registration_by_mac(mac_address):
+        """Get existing registration by MAC address"""
+        try:
+            if FirebaseFunctions._firestore_db is None:
+                FirebaseFunctions.initialize_firebase()
+            
+            clients_ref = FirebaseFunctions._firestore_db.collection("licenses")
+            query = clients_ref.where("ClientMacAddress", "==", mac_address)
+            docs = list(query.stream())
+            
+            if len(docs) > 0:
+                client_data = docs[0].to_dict()
+                client_data["id"] = docs[0].id
+                return client_data
+            return None
+            
+        except Exception as e:
+            st.session_state.error_log.append(f"{datetime.datetime.now()}: Error getting registration by MAC: {e}")
+            return None
+    
+    @staticmethod
     def is_client_eligible(client_data, expected_bot_name, expected_valid_date, mac_address):
-        """Check if client is eligible based on data"""
+        """Enhanced client eligibility check with strict MAC validation"""
         if client_data is None:
             return False
         
+        # Check tool name
         if str(client_data.get("ToolName", "")) != str(expected_bot_name):
             return False
         
+        # Check access status
         if str(client_data.get("AccessStatus", "")) != "ON":
             return False
         
+        # Check validity date
         try:
             date_string = client_data.get("ValidUntil")
             if not date_string:
@@ -92,16 +403,21 @@ class FirebaseFunctions:
             if valid_date < expected_valid_date:
                 return False
             
-            registered_mac = client_data.get("ClientMacAddress", "")
-            if registered_mac and registered_mac != mac_address:
-                st.error("MAC address mismatch detected. This license is tied to a different device.")
-                return False  # Stricter check: fail on MAC mismatch
-            
-            return True
-                
         except Exception as e:
-            st.error(f"Validation error: {e}")
+            st.error(f"Date validation error: {e}")
             return False
+        
+        # STRICT MAC address validation
+        registered_mac = client_data.get("ClientMacAddress", "")
+        if not registered_mac:
+            st.error("No MAC address found in license data.")
+            return False
+        
+        if registered_mac != mac_address:
+            st.error(f"Device mismatch detected!\nRegistered device: {registered_mac}\nCurrent device: {mac_address}\nThis license is tied to a different device.")
+            return False
+        
+        return True
     
     @staticmethod
     def get_client_data_by_license_key(license_key):
@@ -282,54 +598,6 @@ class FirebaseFunctions:
 # -------------------------------
 # Helper Functions
 # -------------------------------
-def get_mac_address():
-    """Get a stable, hardware-based unique device ID for the machine"""
-    try:
-        # Attempt to get hardware-based MAC address
-        node = uuid.getnode()
-        mac = ':'.join(('%012X' % node)[i:i+2] for i in range(0, 12, 2))
-        
-        # Check if a device ID file exists
-        if os.path.exists(DEVICE_ID_FILE):
-            with open(DEVICE_ID_FILE, "r") as f:
-                saved_id = f.read().strip()
-                if saved_id:
-                    if saved_id != mac:
-                        st.error("Device ID mismatch detected. This may indicate a hardware change or file tampering. Contact support if needed.")
-                    return saved_id  # Return saved ID to maintain consistency
-        
-        # Save the new hardware-based ID
-        try:
-            with open(DEVICE_ID_FILE, "w") as f:
-                f.write(mac)
-        except Exception as e:
-            st.session_state.error_log.append(f"{datetime.datetime.now()}: Error saving device ID: {str(e)}")
-            st.warning(f"Failed to save device ID: {e}. Device ID may be regenerated on next run.")
-        
-        return mac
-    
-    except Exception as e:
-        st.session_state.error_log.append(f"{datetime.datetime.now()}: Error getting hardware-based device ID: {str(e)}. Falling back to random UUID.")
-        # Fallback to persistent random UUID if hardware ID fails
-        try:
-            if os.path.exists(DEVICE_ID_FILE):
-                with open(DEVICE_ID_FILE, "r") as f:
-                    device_id = f.read().strip()
-                    if device_id:
-                        return device_id
-            
-            device_id = str(uuid.uuid4())
-            
-            with open(DEVICE_ID_FILE, "w") as f:
-                f.write(device_id)
-            
-            return device_id
-        
-        except Exception as fallback_e:
-            st.session_state.error_log.append(f"{datetime.datetime.now()}: Fallback error in get_mac_address: {str(fallback_e)}")
-            # Ultimate fallback: temporary random ID
-            return str(uuid.uuid4())
-
 def check_license_eligibility(license_key, bot_name, mac_address):
     """Check if license is eligible with security checks"""
     try:
@@ -358,6 +626,21 @@ def should_reset_daily_count(client_data):
         return last_validated_dt.day != datetime.datetime.now().day
     except ValueError:
         return True
+
+def validate_new_registration(email, mac_address):
+    """Validate new registration attempt"""
+    # Check if email already exists
+    existing_email = FirebaseFunctions.get_client_data_by_email(email)
+    if existing_email:
+        return False, "An account with this email already exists. Please login with your existing license key."
+    
+    # Check if MAC address already registered
+    existing_mac_registration = FirebaseFunctions.get_registration_by_mac(mac_address)
+    if existing_mac_registration:
+        existing_email = existing_mac_registration.get("ClientEmail", "Unknown")
+        return False, f"This device is already registered with email: {existing_email}. Please login with your existing license key or contact support if this is an error."
+    
+    return True, "Registration allowed"
 
 # -------------------------------
 # Initialize Firebase
@@ -416,7 +699,7 @@ if "rate_limit_delay" not in st.session_state:
     st.session_state.rate_limit_delay = 0.5
 
 # -------------------------------
-# Check for saved local license key for auto-login
+# Enhanced Auto-Login with Device Validation
 # -------------------------------
 if st.session_state.app_state == "auth" and st.session_state.user_data is None:
     if os.path.exists(LOCAL_LICENSE_FILE):
@@ -424,28 +707,34 @@ if st.session_state.app_state == "auth" and st.session_state.user_data is None:
             saved_key = f.read().strip()
         if saved_key:
             with st.spinner("Auto-validating saved license..."):
-                mac = get_mac_address()
-                is_eligible, client_data = check_license_eligibility(saved_key, "walmart_scraper", mac)
-                if is_eligible:
-                    st.session_state.user_data = client_data
-                    st.session_state.license_valid = True
-                    st.session_state.app_state = "scraping"
-                    st.session_state.firecrawl_api_key = client_data.get("FirecrawlApiKey", "")
-                    plan = client_data.get("Plan", "Free").lower()
-                    if any(word in plan for word in ["basic", "premium", "enterprise"]):
-                        st.session_state.user_tier = "premium"
-                    else:
-                        st.session_state.user_tier = "free"
-                    st.session_state.daily_urls_used = client_data.get("DailyUrlCount", 0)
-                    st.session_state.local_scraped_count = 0
-                    st.session_state.pending_quota_updates = []
-                    if should_reset_daily_count(client_data):
-                        FirebaseFunctions.reset_daily_url_count(saved_key)
-                        st.session_state.daily_urls_used = 0
+                try:
+                    mac = get_mac_address()
+                    is_eligible, client_data = check_license_eligibility(saved_key, "walmart_scraper", mac)
+                    if is_eligible:
+                        st.session_state.user_data = client_data
+                        st.session_state.license_valid = True
+                        st.session_state.app_state = "scraping"
+                        st.session_state.firecrawl_api_key = client_data.get("FirecrawlApiKey", "")
+                        plan = client_data.get("Plan", "Free").lower()
+                        if any(word in plan for word in ["basic", "premium", "enterprise"]):
+                            st.session_state.user_tier = "premium"
+                        else:
+                            st.session_state.user_tier = "free"
+                        st.session_state.daily_urls_used = client_data.get("DailyUrlCount", 0)
                         st.session_state.local_scraped_count = 0
-                    st.rerun()
-                else:
-                    st.warning("Saved license key is invalid or tied to a different device. Please re-enter your license key.")
+                        st.session_state.pending_quota_updates = []
+                        if should_reset_daily_count(client_data):
+                            FirebaseFunctions.reset_daily_url_count(saved_key)
+                            st.session_state.daily_urls_used = 0
+                            st.session_state.local_scraped_count = 0
+                        st.rerun()
+                    else:
+                        st.warning("Saved license key is invalid or tied to a different device. Please re-enter your license key.")
+                        # Remove invalid saved license
+                        os.remove(LOCAL_LICENSE_FILE)
+                except Exception as e:
+                    st.warning(f"Auto-login failed: {e}")
+                    st.session_state.error_log.append(f"{datetime.datetime.now()}: Auto-login error: {e}")
 
 # -------------------------------
 # CSS for UI Styling
@@ -840,98 +1129,161 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # -------------------------------
-# Authentication Interface
+# Enhanced Authentication Interface
 # -------------------------------
 if st.session_state.app_state == "auth":
     st.title("Walmart Product Scraper")
     st.markdown("**Professional-grade data extraction for market research and competitive analysis.**")
     
-    tab1, tab2 = st.tabs(["👤 New Registration", "🔐 Existing User"])
+    tab1, tab2 = st.tabs(["New Registration", "Existing User"])
     
     with tab1:
         st.subheader("Create Your Account")
-        with st.form("registration_form"):
-            col1, col2 = st.columns([3, 2])
-            with col1:
-                full_name = st.text_input("Full Name", placeholder="John Doe")
-                email = st.text_input("Email Address", placeholder="john@example.com")
-                firecrawl_api_key = st.text_input("Firecrawl API Key", placeholder="fc-...", type="password")
-                selected_plan = st.selectbox("Select Plan", [
-                    "Free Plan - 50 URLs/Day (7 Days)",
-                    "Basic Plan - 500 URLs/Day (1 Month)",
-                    "Premium Plan - 2,500 URLs/Day (3 Months)",
-                    "Enterprise Plan - 5,000 URLs/Day (1 Year)"
-                ], help="Choose your subscription plan")
-                base_plan = selected_plan.split(" - ")[0].replace(" Plan", "")
-            with col2:
-                mac_address = get_mac_address()
-                st.text_input("Device ID", value=mac_address, disabled=True)
-                registration_date = datetime.datetime.now().strftime("%Y-%m-%d")
-                st.text_input("Registration Date", value=registration_date, disabled=True)
+        
+        # Get device ID early for validation
+        try:
+            device_id = get_mac_address()
             
-            agree_terms = st.checkbox("I agree to the [Terms of Service](https://example.com/terms) and [Privacy Policy](https://example.com/privacy)")
-            dont_ask = st.checkbox("Don't ask again on this device", value=True)
-            
-            submitted = st.form_submit_button("Create Account")
-            
-            if submitted:
-                with st.spinner("Creating account..."):
-                    if not all([full_name, email, firecrawl_api_key]):
-                        st.error("Please fill in all required fields including Firecrawl API Key.")
-                    elif not agree_terms:
-                        st.error("You must agree to the Terms of Service.")
-                    else:
-                        existing_client_email = FirebaseFunctions.get_client_data_by_email(email)
-                        existing_client_mac = FirebaseFunctions.get_client_data_by_mac(mac_address)
-                        if existing_client_email:
-                            st.error("An account with this email already exists. Please login or use a different email.")
-                        elif existing_client_mac:
-                            st.error("This device is already registered. Please login with your existing license key.")
-                        else:
-                            client_data = {
-                                "ClientName": full_name,
-                                "ClientEmail": email,
-                                "ClientMacAddress": mac_address,
-                                "RegistrationDate": registration_date,
-                                "Plan": base_plan,
-                                "ToolName": "walmart_scraper",
-                                "AccessStatus": "ON",
-                                "DailyUrlCount": 0,
-                                "FirecrawlApiKey": firecrawl_api_key
-                            }
-                            
-                            license_key, doc_id = FirebaseFunctions.add_new_client(client_data)
-                            
-                            if license_key:
-                                client_data["LicenseKey"] = license_key
-                                client_data["id"] = doc_id
-                                st.session_state.user_data = client_data
-                                st.session_state.license_valid = True
-                                st.session_state.app_state = "scraping"
-                                st.session_state.firecrawl_api_key = firecrawl_api_key
-                                if dont_ask:
-                                    with open(LOCAL_LICENSE_FILE, "w") as f:
-                                        f.write(license_key)
-                                st.success(f"Account created on **{selected_plan}**! License Key: **{license_key}** (Save this if needed).")
-                                st.rerun()
+            # Check if this device is already registered
+            existing_registration = FirebaseFunctions.get_registration_by_mac(device_id)
+            if existing_registration:
+                existing_email = existing_registration.get("ClientEmail", "Unknown")
+                st.error(f"""
+                Device Already Registered
+                
+                This device is already registered with email: **{existing_email}**
+                
+                Please use the "Existing User" tab to login with your license key.
+                
+                If you believe this is an error, contact support.
+                """)
+            else:
+                with st.form("registration_form"):
+                    col1, col2 = st.columns([3, 2])
+                    
+                    with col1:
+                        full_name = st.text_input("Full Name", placeholder="John Doe")
+                        email = st.text_input("Email Address", placeholder="john@example.com")
+                        firecrawl_api_key = st.text_input("Firecrawl API Key", placeholder="fc-...", type="password")
+                        selected_plan = st.selectbox("Select Plan", [
+                            "Free Plan - 50 URLs/Day (7 Days)",
+                            "Basic Plan - 500 URLs/Day (1 Month)",
+                            "Premium Plan - 2,500 URLs/Day (3 Months)",
+                            "Enterprise Plan - 5,000 URLs/Day (1 Year)"
+                        ], help="Choose your subscription plan")
+                        base_plan = selected_plan.split(" - ")[0].replace(" Plan", "")
+                        
+                    with col2:
+                        st.text_input("Device ID", value=device_id, disabled=True, 
+                                     help="Unique identifier for this device")
+                        registration_date = datetime.datetime.now().strftime("%Y-%m-%d")
+                        st.text_input("Registration Date", value=registration_date, disabled=True)
+                        
+                        # Display device info for transparency
+                        with st.expander("Device Information", expanded=False):
+                            try:
+                                fingerprint_data = generate_device_fingerprint()
+                                if fingerprint_data:
+                                    st.write(f"Primary MAC: {fingerprint_data['primary_mac']}")
+                                    st.write(f"All MACs: {', '.join(fingerprint_data['all_macs'])}")
+                                    st.write(f"Hardware Components: {fingerprint_data['components_count']}")
+                            except Exception:
+                                st.write("Device fingerprint not available")
+                    
+                    agree_terms = st.checkbox("I agree to the [Terms of Service](https://example.com/terms) and [Privacy Policy](https://example.com/privacy)")
+                    dont_ask = st.checkbox("Don't ask again on this device", value=True)
+                    
+                    submitted = st.form_submit_button("Create Account")
+                    
+                    if submitted:
+                        with st.spinner("Creating account and validating device..."):
+                            # Validate required fields
+                            if not all([full_name, email, firecrawl_api_key]):
+                                st.error("Please fill in all required fields including Firecrawl API Key.")
+                            elif not agree_terms:
+                                st.error("You must agree to the Terms of Service.")
                             else:
-                                st.error("Failed to create account. Try again.")
+                                # Enhanced validation
+                                is_valid, message = validate_new_registration(email, device_id)
+                                if not is_valid:
+                                    st.error(f"{message}")
+                                else:
+                                    # Create account
+                                    try:
+                                        client_data = {
+                                            "ClientName": full_name,
+                                            "ClientEmail": email,
+                                            "ClientMacAddress": device_id,
+                                            "RegistrationDate": registration_date,
+                                            "Plan": base_plan,
+                                            "ToolName": "walmart_scraper",
+                                            "AccessStatus": "ON",
+                                            "DailyUrlCount": 0,
+                                            "FirecrawlApiKey": firecrawl_api_key
+                                        }
+                                        
+                                        license_key, doc_id = FirebaseFunctions.add_new_client(client_data)
+                                        
+                                        if license_key:
+                                            client_data["LicenseKey"] = license_key
+                                            client_data["id"] = doc_id
+                                            st.session_state.user_data = client_data
+                                            st.session_state.license_valid = True
+                                            st.session_state.app_state = "scraping"
+                                            st.session_state.firecrawl_api_key = firecrawl_api_key
+                                            
+                                            if dont_ask:
+                                                with open(LOCAL_LICENSE_FILE, "w") as f:
+                                                    f.write(license_key)
+                                            
+                                            st.success(f"""
+                                            Account Created Successfully!
+                                            
+                                            **Plan:** {selected_plan}  
+                                            **License Key:** `{license_key}`  
+                                            **Device:** {device_id}
+                                            
+                                            Important: Save your license key securely. This device is now permanently linked to your account.
+                                            """)
+                                            
+                                            # Log successful registration
+                                            st.session_state.error_log.append(f"{datetime.datetime.now()}: New account registered - Email: {email}, Device: {device_id}, Plan: {base_plan}")
+                                            st.rerun()
+                                        else:
+                                            st.error("Failed to create account. Please try again or contact support.")
+                                            
+                                    except Exception as e:
+                                        st.error(f"Account creation failed: {e}")
+                                        st.session_state.error_log.append(f"{datetime.datetime.now()}: Account creation error: {e}")
+                
+        except Exception as e:
+            st.error(f"Device validation failed: {e}")
+            st.session_state.error_log.append(f"{datetime.datetime.now()}: Device validation error: {e}")
     
     with tab2:
         st.subheader("Login to Your Account")
+        
+        # Get device ID for validation
+        try:
+            device_id = get_mac_address()
+        except Exception as e:
+            st.error(f"Device validation failed: {e}")
+            st.stop()
+        
         license_key = st.text_input("License Key", type="password", placeholder="Enter your license key")
-        mac_address = get_mac_address()
-        st.text_input("Device ID", value=mac_address, disabled=True)
+        st.text_input("Device ID", value=device_id, disabled=True, 
+                     help="This must match the device ID used during registration")
         dont_ask = st.checkbox("Don't ask again on this device")
         
         if st.button("Validate License"):
             if license_key:
-                with st.spinner("Validating license..."):
-                    is_eligible, client_data = check_license_eligibility(license_key, "walmart_scraper", mac_address)
+                with st.spinner("Validating license and device..."):
+                    is_eligible, client_data = check_license_eligibility(license_key, "walmart_scraper", device_id)
                     if is_eligible:
                         if dont_ask:
                             with open(LOCAL_LICENSE_FILE, "w") as f:
                                 f.write(license_key)
+                        
                         st.session_state.user_data = client_data
                         st.session_state.license_valid = True
                         st.session_state.app_state = "scraping"
@@ -944,13 +1296,27 @@ if st.session_state.app_state == "auth":
                         st.session_state.daily_urls_used = client_data.get("DailyUrlCount", 0)
                         st.session_state.local_scraped_count = 0
                         st.session_state.pending_quota_updates = []
+                        
                         if should_reset_daily_count(client_data):
                             FirebaseFunctions.reset_daily_url_count(license_key)
                             st.session_state.daily_urls_used = 0
                             st.session_state.local_scraped_count = 0
+                        
+                        st.success("License validated successfully!")
                         st.rerun()
                     else:
-                        st.error("❌ Invalid license key or device mismatch.")
+                        st.error("Invalid license key or device mismatch.")
+                        # Show additional help for device mismatch
+                        if client_data:
+                            registered_mac = client_data.get("ClientMacAddress", "")
+                            if registered_mac and registered_mac != device_id:
+                                st.info(f"""
+                                **Device Mismatch Information:**
+                                - Registered Device: `{registered_mac}`
+                                - Current Device: `{device_id}`
+                                
+                                This license is tied to a different device. Contact support if you've replaced your hardware.
+                                """)
             else:
                 st.error("Please enter your license key.")
 
@@ -976,7 +1342,6 @@ if st.session_state.app_state == "scraping":
 
     sidebar_header(
         title="Scraper Settings",
-        icon_path="D:/settings.png",
         subtitle="Customize your data extraction"
     )
 
@@ -1010,10 +1375,10 @@ if st.session_state.app_state == "scraping":
                 st.session_state.selected_fields.append(dc)
             elif not checked and dc in st.session_state.selected_fields:
                 st.session_state.selected_fields.remove(dc)
-        st.info("💡 Unselect heavy fields (Images/Videos) for faster scraping.")
+        st.info("Unselect heavy fields (Images/Videos) for faster scraping.")
 
     # Sidebar Bottom: Account Info in Expander and Logout
-    with st.sidebar.expander("📋 Account Info"):
+    with st.sidebar.expander("Account Info"):
         st.markdown(f"""
         **Account:** {st.session_state.user_data.get('ClientName', 'N/A')}  
         **Valid Until:** {st.session_state.user_data.get('ValidUntil', 'N/A')}  
@@ -1050,14 +1415,14 @@ if st.session_state.app_state == "scraping":
     st.markdown("**Extract structured product data with ease. Perfect for market research and catalog building.**")
 
     if not st.session_state.firecrawl_api_key:
-        st.error("❌ Firecrawl API key is required. Please enter it in the sidebar.")
+        st.error("Firecrawl API key is required. Please enter it in the sidebar.")
         st.stop()
 
     # Initialize Firecrawl
     try:
         firecrawl = Firecrawl(api_key=st.session_state.firecrawl_api_key)
     except Exception as e:
-        st.error(f"❌ Error initializing scraper: {e}. Please check your Firecrawl API key.")
+        st.error(f"Error initializing scraper: {e}. Please check your Firecrawl API key.")
         st.session_state.error_log.append(f"{datetime.datetime.now()}: Error initializing Firecrawl: {e}")
         st.stop()
 
@@ -1078,14 +1443,14 @@ if st.session_state.app_state == "scraping":
                     if 'url' in df.columns:
                         urls = df['url'].dropna().tolist()
                         if len(urls) > (max_urls - daily_urls_used):
-                            st.error(f"❌ This would exceed the remaining {max_urls - daily_urls_used} URL limit (Daily used: {daily_urls_used}).")
+                            st.error(f"This would exceed the remaining {max_urls - daily_urls_used} URL limit (Daily used: {daily_urls_used}).")
                             urls = []
                         else:
                             st.markdown(f'<div class="custom-info">Successfully loaded {len(urls)} URLs</div>', unsafe_allow_html=True)
                     else:
-                        st.error("❌ CSV must have a 'url' column")
+                        st.error("CSV must have a 'url' column")
                 except Exception as e:
-                    st.error(f"❌ Failed to read CSV: {e}")
+                    st.error(f"Failed to read CSV: {e}")
                     st.session_state.error_log.append(f"{datetime.datetime.now()}: Error reading CSV: {e}")
     else:
         url_text = st.text_area("Enter URLs (one per line)", placeholder="https://www.walmart.com/ip/...", height=150)
@@ -1094,12 +1459,12 @@ if st.session_state.app_state == "scraping":
                 try:
                     urls = [line.strip() for line in url_text.splitlines() if line.strip()]
                     if len(urls) > (max_urls - daily_urls_used):
-                        st.error(f"❌ This would exceed the remaining {max_urls - daily_urls_used} URL limit (Daily used: {daily_urls_used}).")
+                        st.error(f"This would exceed the remaining {max_urls - daily_urls_used} URL limit (Daily used: {daily_urls_used}).")
                         urls = []
                     else:
                         st.markdown(f'<div class="custom-info">Successfully loaded {len(urls)} URLs</div>', unsafe_allow_html=True)
                 except Exception as e:
-                    st.error(f"❌ Error processing URLs: {e}")
+                    st.error(f"Error processing URLs: {e}")
                     st.session_state.error_log.append(f"{datetime.datetime.now()}: Error processing URLs: {e}")
 
     if urls:
@@ -1127,7 +1492,7 @@ if st.session_state.app_state == "scraping":
         i = st.session_state.current_scraping_index
         if i < st.session_state.total_urls:
             if st.session_state.daily_urls_used >= max_urls:
-                st.error("❌ Daily URL limit reached. Cannot scrape more.")
+                st.error("Daily URL limit reached. Cannot scrape more.")
                 st.session_state.scraping_in_progress = False
                 st.rerun()
             with st.spinner(f"Scraping URL {i+1}/{st.session_state.total_urls}: {urls[i]}"):
@@ -1150,10 +1515,10 @@ if st.session_state.app_state == "scraping":
                         scraped_success = True
                     else:
                         st.session_state.error_log.append(f"{datetime.datetime.now()}: Skipped URL {urls[i]}: No data returned")
-                        st.warning(f"⚠️ Skipped URL {urls[i]}: No data returned.")
+                        st.warning(f"Skipped URL {urls[i]}: No data returned.")
                 except Exception as e:
                     st.session_state.error_log.append(f"{datetime.datetime.now()}: Skipped URL {urls[i]}: Error - {str(e)}")
-                    st.warning(f"⚠️ Skipped URL {urls[i]}: Error - {str(e)}.")
+                    st.warning(f"Skipped URL {urls[i]}: Error - {str(e)}.")
 
                 if row is not None:
                     st.session_state.all_data.append(row)
@@ -1168,11 +1533,11 @@ if st.session_state.app_state == "scraping":
                         else:
                             st.session_state.pending_quota_updates.append(urls[i])
                             st.session_state.error_log.append(f"{datetime.datetime.now()}: Quota update failed for URL {urls[i]}: Update returned False")
-                            st.warning(f"⚠️ Failed to update quota for URL {urls[i]}. Added to pending updates.")
+                            st.warning(f"Failed to update quota for URL {urls[i]}. Added to pending updates.")
                     except Exception as e:
                         st.session_state.pending_quota_updates.append(urls[i])
                         st.session_state.error_log.append(f"{datetime.datetime.now()}: Quota update failed for URL {urls[i]}: {str(e)}")
-                        st.warning(f"⚠️ Failed to update quota for URL {urls[i]}: {str(e)}. Added to pending updates.")
+                        st.warning(f"Failed to update quota for URL {urls[i]}: {str(e)}. Added to pending updates.")
                 else:
                     st.session_state.error_count += 1
                 
@@ -1253,14 +1618,14 @@ if st.session_state.app_state == "scraping":
                                 retry_delay = min(retry_delay * 2, 20)
                             else:
                                 st.session_state.error_log.append(f"{datetime.datetime.now()}: Failed to fetch final quota after {max_db_retries} retries: {str(e)}")
-                    st.success(f"🎉 Scraping completed! Success: {st.session_state.scraped_count}, Errors: {st.session_state.error_count}, URLs Used: {st.session_state.daily_urls_used}, Local Scraped: {st.session_state.local_scraped_count}")
+                    st.success(f"Scraping completed! Success: {st.session_state.scraped_count}, Errors: {st.session_state.error_count}, URLs Used: {st.session_state.daily_urls_used}, Local Scraped: {st.session_state.local_scraped_count}")
                     if st.session_state.error_log:
                         with st.expander("Debug: Error Log", expanded=False):
                             st.write(st.session_state.error_log)
                 except Exception as e:
                     st.session_state.error_log.append(f"{datetime.datetime.now()}: Finalization error: {str(e)}")
             else:
-                st.warning("⚠️ No data extracted. Check URLs.")
+                st.warning("No data extracted. Check URLs.")
             st.rerun()
 
     # Display Final Scraped Data
@@ -1274,13 +1639,13 @@ if st.session_state.app_state == "scraping":
                 "enterprise": 5000
             }
             display_limit = min(len(df), plan_limits.get(st.session_state.user_tier, 50))
-            st.subheader("📊 Data Preview")
+            st.subheader("Data Preview")
             st.dataframe(df.head(display_limit), use_container_width=True, height=400)
 
             col1, col2, col3 = st.columns(3)
             with col1:
                 st.download_button(
-                    "⬇Download Sample",
+                    "Download Sample",
                     df.head(50).to_csv(index=False).encode("utf-8"),
                     "sample_walmart_products.csv",
                     "text/csv",
@@ -1289,25 +1654,25 @@ if st.session_state.app_state == "scraping":
             with col2:
                 if st.session_state.user_tier == "premium":
                     st.download_button(
-                        "⬇Download Full Data",
+                        "Download Full Data",
                         df.to_csv(index=False).encode("utf-8"),
                         "walmart_products.csv",
                         "text/csv"
                     )
                 else:
-                    st.button("⬇Download Full Data (Premium Only)",
+                    st.button("Download Full Data (Premium Only)",
                              help="Upgrade to premium for full datasets")
             with col3:
-                if st.button("🗑️ Clear Data"):
+                if st.button("Clear Data"):
                     st.session_state.scraped_data = []
-                    st.success("🧹 Data cleared!")
+                    st.success("Data cleared!")
                     st.rerun()
         except Exception as e:
             st.session_state.error_log.append(f"{datetime.datetime.now()}: Data display error: {str(e)}")
 
     # Tutorial and Footer
     st.markdown("---")
-    st.subheader("📺 Tutorial Video")
+    st.subheader("Tutorial Video")
     st.video("https://www.youtube.com/watch?v=dQw4w9WgXcQ", format="video/mp4")
     st.markdown("---")
     st.markdown("""

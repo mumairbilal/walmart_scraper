@@ -1,6 +1,7 @@
 import base64
 import datetime
 import os
+import re
 import socket
 import time
 import uuid
@@ -31,35 +32,18 @@ PLAN_LIMITS = {
 LOCAL_LICENSE_FILE = ".walmart_scraper_license"
 DEVICE_ID_FILE = ".device_fingerprint"
 
-import uuid
-import os
-import datetime
-import hashlib
-import time
-import random
-import platform
-import tempfile
-import streamlit as st
-
 def get_system_path():
     """Get system-specific path for device ID"""
-    # For Railway deployments, use environment-specific path
-    if os.environ.get("RAILWAY_ENVIRONMENT"):
-        # Use Railway-specific directory
-        base = tempfile.gettempdir()
-        app_dir = os.path.join(base, 'walmart_scraper_railway')
-    else:
-        # Local development
-        system = platform.system().lower()
-        if system == "windows":
-            base = os.environ.get('LOCALAPPDATA', tempfile.gettempdir())
-        elif system == "darwin":
-            base = os.path.expanduser('~/Library/Application Support')
-        else:
-            base = os.environ.get('XDG_CONFIG_HOME', os.path.expanduser('~/.config'))
-        
-        app_dir = os.path.join(base, 'walmart_scraper')
+    system = platform.system().lower()
     
+    if system == "windows":
+        base = os.environ.get('LOCALAPPDATA', tempfile.gettempdir())
+    elif system == "darwin":
+        base = os.path.expanduser('~/Library/Application Support')
+    else:
+        base = os.environ.get('XDG_CONFIG_HOME', os.path.expanduser('~/.config'))
+    
+    app_dir = os.path.join(base, 'walmart_scraper')
     try:
         os.makedirs(app_dir, exist_ok=True)
     except:
@@ -68,8 +52,8 @@ def get_system_path():
     return os.path.join(app_dir, 'device.id')
 
 def create_unique_id():
-    """Create guaranteed unique device ID with deployment-specific factors"""
-    # Multiple entropy sources including deployment-specific info
+    """Create guaranteed unique device ID"""
+    # Multiple entropy sources
     timestamp = str(time.time_ns())
     uuid1 = str(uuid.uuid4())
     uuid2 = str(uuid.uuid4())
@@ -82,14 +66,8 @@ def create_unique_id():
         hostname = f"host_{random.randint(10000, 99999)}"
         system = f"sys_{random.randint(10000, 99999)}"
     
-    # Add deployment-specific information
-    railway_env = os.environ.get("RAILWAY_ENVIRONMENT", "local")
-    railway_project = os.environ.get("RAILWAY_PROJECT_NAME", "unknown")
-    railway_service = os.environ.get("RAILWAY_SERVICE_NAME", "unknown")
-    railway_instance = os.environ.get("RAILWAY_INSTANCE_ID", str(random.randint(10000, 99999)))
-    
-    # Combine all entropy with deployment info
-    entropy = f"{timestamp}_{uuid1}_{uuid2}_{random_nums}_{hostname}_{system}_{railway_env}_{railway_project}_{railway_service}_{railway_instance}_{id({})}"
+    # Combine all entropy
+    entropy = f"{timestamp}_{uuid1}_{uuid2}_{random_nums}_{hostname}_{system}_{id({})}"
     
     # Create hash
     device_hash = hashlib.sha256(entropy.encode()).hexdigest()
@@ -100,7 +78,9 @@ def create_unique_id():
     return device_id
 
 def get_mac_address():
-    """Get unique device MAC address with deployment awareness"""
+    """Get unique device MAC address"""
+    # Get the MAC address as a 48-bit integer
+
     device_path = get_system_path()
     
     # Try to load existing
@@ -114,7 +94,10 @@ def get_mac_address():
             pass
     
     # Create new ID
-    device_id = create_unique_id()
+    mac_int = uuid.getnode()
+
+    # Convert the integer to a formatted MAC address string
+    device_id = ':'.join(re.findall('..', '%012x' % mac_int))
     
     # Save it
     try:
@@ -127,11 +110,7 @@ def get_mac_address():
             'created': datetime.datetime.now().isoformat(),
             'platform': platform.system(),
             'hostname': platform.node(),
-            'path': device_path,
-            'deployment_env': os.environ.get("RAILWAY_ENVIRONMENT", "local"),
-            'deployment_project': os.environ.get("RAILWAY_PROJECT_NAME", "unknown"),
-            'deployment_service': os.environ.get("RAILWAY_SERVICE_NAME", "unknown"),
-            'deployment_instance': os.environ.get("RAILWAY_INSTANCE_ID", "unknown")
+            'path': device_path
         }
         
         backup_path = device_path.replace('.id', '_info.json')
@@ -159,8 +138,6 @@ def test_device_uniqueness():
     st.write(f"- Hostname: {platform.node()}")
     st.write(f"- File Path: `{device_path}`")
     st.write(f"- File Exists: {'✅' if os.path.exists(device_path) else '❌'}")
-    st.write(f"- Deployment Environment: {os.environ.get('RAILWAY_ENVIRONMENT', 'local')}")
-    st.write(f"- Deployment Instance: {os.environ.get('RAILWAY_INSTANCE_ID', 'unknown')}")
     
     # Test multiple generations
     st.write("\n**Uniqueness Test:**")
@@ -867,7 +844,7 @@ st.markdown("""
             color: #ffffff !important;
         }
         div.stExpander {
-            background-color: 1E1E1E !important;
+            background-color: #1E1E1E !important;
         }
         div.stRadio > div {
             background-color: #1E1E1E !important;

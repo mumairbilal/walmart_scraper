@@ -12,21 +12,8 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 import json
 import hashlib
+
 import streamlit.components.v1 as components
-
-PLAN_LIMITS = {
-    "Free": {"daily_limit": 50, "valid_days": 7},
-    "Basic": {"daily_limit": 500, "valid_days": 30},
-    "Premium": {"daily_limit": 2500, "valid_days": 90},
-    "Enterprise": {"daily_limit": 5000, "valid_days": 365}
-}
-
-LOCAL_LICENSE_FILE = ".walmart_scraper_license"
-DEVICE_ID_FILE = ".device_id"
-
-def is_cloud():
-    """Detect Railway"""
-    return os.environ.get('RAILWAY_ENVIRONMENT') is not None
 
 def create_device_fingerprint():
     """
@@ -40,7 +27,8 @@ def create_device_fingerprint():
         return device_hash[:16].upper()
     except Exception:
         return hashlib.sha256(str(uuid.uuid1()).encode()).hexdigest()[:16].upper()
-    
+
+
 def _inject_browser_device_js(local_key="device_id_streamlit_app"):
     js = f"""
     <script>
@@ -60,7 +48,6 @@ def _inject_browser_device_js(local_key="device_id_streamlit_app"):
             if (params.get('device_id') !== id) {{
                 params.set('device_id', id);
                 const newUrl = window.location.origin + window.location.pathname + '?' + params.toString() + window.location.hash;
-                // replace to avoid creating history entries
                 window.location.replace(newUrl);
             }}
         }} catch(e) {{
@@ -69,25 +56,17 @@ def _inject_browser_device_js(local_key="device_id_streamlit_app"):
     }})();
     </script>
     """
-    # height=0 keeps it invisible
-    components.html(js, height=0) 
+    components.html(js, height=0)
+
+
 def get_device_id():
-    """
-    Ensure a stable device id per browser by:
-    1) reading `device_id` from URL query params (added by the JS),
-    2) falling back to a local file (for non-browser / local runs),
-    3) injecting JS to set localStorage and reload with query param if nothing found,
-    4) finally falling back to a server-side fingerprint if JS is not available.
-    """
     if 'device_id' in st.session_state and st.session_state.device_id:
         return st.session_state.device_id
 
-    # 1) check query params (JS will add ?device_id=... on first load)
     params = st.experimental_get_query_params()
     q_device = params.get('device_id', [None])[0]
     if q_device:
         st.session_state.device_id = q_device
-        # persist locally for non-cloud dev convenience
         if not is_cloud():
             try:
                 with open(DEVICE_ID_FILE, 'w') as f:
@@ -97,7 +76,6 @@ def get_device_id():
                     st.session_state.error_log.append(f"{datetime.datetime.now()}: Failed to write device file: {e}")
         return q_device
 
-    # 2) check server-side file (useful for local runs / non-browser contexts)
     if not is_cloud() and os.path.exists(DEVICE_ID_FILE):
         try:
             with open(DEVICE_ID_FILE, 'r') as f:
@@ -109,16 +87,13 @@ def get_device_id():
             if 'error_log' in st.session_state:
                 st.session_state.error_log.append(f"{datetime.datetime.now()}: Failed reading device file: {e}")
 
-    # 3) inject JS to create/read localStorage and reload with the device_id query param
     try:
         _inject_browser_device_js()
-        # stop execution now — page will reload with device_id param and server will capture it on next run
         st.stop()
     except Exception as e:
         if 'error_log' in st.session_state:
             st.session_state.error_log.append(f"{datetime.datetime.now()}: JS injection failed: {e}")
 
-    # 4) final fallback: generate server-side fingerprint
     sid = create_device_fingerprint()
     st.session_state.device_id = sid
     if not is_cloud():
@@ -128,6 +103,48 @@ def get_device_id():
         except Exception:
             pass
     return sid
+
+
+PLAN_LIMITS = {
+    "Free": {"daily_limit": 50, "valid_days": 7},
+    "Basic": {"daily_limit": 500, "valid_days": 30},
+    "Premium": {"daily_limit": 2500, "valid_days": 90},
+    "Enterprise": {"daily_limit": 5000, "valid_days": 365}
+}
+
+LOCAL_LICENSE_FILE = ".walmart_scraper_license"
+DEVICE_ID_FILE = ".device_id"
+
+def is_cloud():
+    """Detect Railway"""
+    return os.environ.get('RAILWAY_ENVIRONMENT') is not None
+
+def get_device_id():
+    """Get or generate a stable device ID, persists via file or Firebase"""
+    if 'device_id' not in st.session_state:
+        # Check local file for non-cloud environments
+        if not is_cloud() and os.path.exists(DEVICE_ID_FILE):
+            with open(DEVICE_ID_FILE, "r") as f:
+                st.session_state.device_id = f.read().strip()
+        else:
+            # Check Firebase for registered device
+            try:
+                FirebaseFunctions.initialize_firebase()
+                client_data = FirebaseFunctions.get_registration_by_device_id(st.session_state.get('device_id', None))
+                if client_data and client_data.get("ClientDeviceId"):
+                    st.session_state.device_id = client_data["ClientDeviceId"]
+                else:
+                    # Generate new ID and save to file (non-cloud)
+                    st.session_state.device_id = create_device_fingerprint()
+                    if not is_cloud():
+                        with open(DEVICE_ID_FILE, "w") as f:
+                            f.write(st.session_state.device_id)
+            except Exception as e:
+                st.session_state.error_log.append(f"{datetime.datetime.now()}: Device ID retrieval error: {e}")
+                st.session_state.device_id = create_device_fingerprint()
+        if 'error_log' in st.session_state:
+            st.session_state.error_log.append(f"{datetime.datetime.now()}: Using device ID: {st.session_state.device_id}")
+    return st.session_state.device_id
 
 def clear_device_id():
     """Clear on logout"""

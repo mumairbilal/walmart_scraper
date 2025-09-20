@@ -12,6 +12,7 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 import json
 import hashlib
+import streamlit.components.v1 as components
 
 PLAN_LIMITS = {
     "Free": {"daily_limit": 50, "valid_days": 7},
@@ -28,32 +29,104 @@ def is_cloud():
     return os.environ.get('RAILWAY_ENVIRONMENT') is not None
 
 def create_device_fingerprint():
-    """Generate unique device ID based on hardware + env, not random UUID"""
+    """
+    Server-side fallback (used only when there is no browser device id available).
+    This is NOT used for uniqueness between clients in a hosted Streamlit app.
+    """
     try:
-        # Use MAC address + machine info for stability
-        mac = uuid.getnode()  # MAC address
-        sys_info = f"{os.name}-{os.getenv('COMPUTERNAME', '')}-{os.getenv('HOSTNAME', '')}"
-        seed = f"{mac}-{sys_info}"
+        node = uuid.getnode()
+        seed = f"{node}-{os.getenv('HOSTNAME','')}-{os.getenv('COMPUTERNAME','')}"
         device_hash = hashlib.sha256(seed.encode()).hexdigest()
-        return device_hash[:16].upper()  # shorten for readability
+        return device_hash[:16].upper()
     except Exception:
-        # fallback to uuid1 (time+mac based, more stable than uuid4)
-        return str(uuid.uuid1())
-
+        return hashlib.sha256(str(uuid.uuid1()).encode()).hexdigest()[:16].upper()
+def _inject_browser_device_js(local_key="device_id_streamlit_app"):
+    js = f"""
+    <script>
+    (function() {{
+        const key = "{local_key}";
+        try {{
+            let id = localStorage.getItem(key);
+            if (!id) {{
+                if (typeof crypto !== 'undefined' && crypto.randomUUID) {{
+                    id = crypto.randomUUID();
+                }} else {{
+                    id = 'did-' + Math.floor(Math.random()*1e16).toString(36);
+                }}
+                localStorage.setItem(key, id);
+            }}
+            const params = new URLSearchParams(window.location.search);
+            if (params.get('device_id') !== id) {{
+                params.set('device_id', id);
+                const newUrl = window.location.origin + window.location.pathname + '?' + params.toString() + window.location.hash;
+                // replace to avoid creating history entries
+                window.location.replace(newUrl);
+            }}
+        }} catch(e) {{
+            console.log('Device ID JS error', e);
+        }}
+    }})();
+    </script>
+    """
+    # height=0 keeps it invisible
+    components.html(js, height=0) """
 def get_device_id():
-    """Get or generate a stable device ID, persists via file or Firebase"""
-    if "device_id" not in st.session_state:
-        if not is_cloud() and os.path.exists(DEVICE_ID_FILE):
-            with open(DEVICE_ID_FILE, "r") as f:
-                st.session_state.device_id = f.read().strip()
-        else:
-            # generate stable fingerprint
-            device_id = create_device_fingerprint()
-            st.session_state.device_id = device_id
-            if not is_cloud():
-                with open(DEVICE_ID_FILE, "w") as f:
-                    f.write(device_id)
-    return st.session_state.device_id
+    """
+    Ensure a stable device id per browser by:
+    1) reading `device_id` from URL query params (added by the JS),
+    2) falling back to a local file (for non-browser / local runs),
+    3) injecting JS to set localStorage and reload with query param if nothing found,
+    4) finally falling back to a server-side fingerprint if JS is not available.
+    """
+    if 'device_id' in st.session_state and st.session_state.device_id:
+        return st.session_state.device_id
+
+    # 1) check query params (JS will add ?device_id=... on first load)
+    params = st.experimental_get_query_params()
+    q_device = params.get('device_id', [None])[0]
+    if q_device:
+        st.session_state.device_id = q_device
+        # persist locally for non-cloud dev convenience
+        if not is_cloud():
+            try:
+                with open(DEVICE_ID_FILE, 'w') as f:
+                    f.write(q_device)
+            except Exception as e:
+                if 'error_log' in st.session_state:
+                    st.session_state.error_log.append(f"{datetime.datetime.now()}: Failed to write device file: {e}")
+        return q_device
+
+    # 2) check server-side file (useful for local runs / non-browser contexts)
+    if not is_cloud() and os.path.exists(DEVICE_ID_FILE):
+        try:
+            with open(DEVICE_ID_FILE, 'r') as f:
+                sid = f.read().strip()
+            if sid:
+                st.session_state.device_id = sid
+                return sid
+        except Exception as e:
+            if 'error_log' in st.session_state:
+                st.session_state.error_log.append(f"{datetime.datetime.now()}: Failed reading device file: {e}")
+
+    # 3) inject JS to create/read localStorage and reload with the device_id query param
+    try:
+        _inject_browser_device_js()
+        # stop execution now — page will reload with device_id param and server will capture it on next run
+        st.stop()
+    except Exception as e:
+        if 'error_log' in st.session_state:
+            st.session_state.error_log.append(f"{datetime.datetime.now()}: JS injection failed: {e}")
+
+    # 4) final fallback: generate server-side fingerprint
+    sid = create_device_fingerprint()
+    st.session_state.device_id = sid
+    if not is_cloud():
+        try:
+            with open(DEVICE_ID_FILE, 'w') as f:
+                f.write(sid)
+        except Exception:
+            pass
+    return sid
 
 def clear_device_id():
     """Clear on logout"""
@@ -1205,4 +1278,5 @@ if st.session_state.app_state == "scraping":
         with st.expander("Error Log", expanded=False):
             for log in st.session_state.error_log[-10:]:
                 st.write(log)
+
 

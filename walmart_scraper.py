@@ -15,7 +15,6 @@ import json
 import hashlib
 import platform
 import tempfile
-import streamlit.components.v1 as components
 
 PLAN_LIMITS = {
     "Free": {"daily_limit": 50, "valid_days": 7},
@@ -25,20 +24,17 @@ PLAN_LIMITS = {
 }
 
 LOCAL_LICENSE_FILE = ".walmart_scraper_license"
-DEVICE_ID_KEY = "device_id"
-COOKIE_NAME = "walmart_scraper_device_id"
+DEVICE_ID_FILE = ".device_id"
 
 def get_system_path():
-    """Get system-specific path for device ID file (used only in local runs)"""
+    """Get system-specific path for device ID file"""
     system = platform.system().lower()
-    
     if system == "windows":
         base = os.environ.get('LOCALAPPDATA', tempfile.gettempdir())
     elif system == "darwin":
         base = os.path.expanduser('~/Library/Application Support')
     else:
         base = os.environ.get('XDG_CONFIG_HOME', os.path.expanduser('~/.config'))
-    
     app_dir = os.path.join(base, 'walmart_scraper')
     try:
         os.makedirs(app_dir, exist_ok=True)
@@ -46,99 +42,78 @@ def get_system_path():
         if 'error_log' in st.session_state:
             st.session_state.error_log.append(f"{datetime.datetime.now()}: Error creating app dir {app_dir}: {e}")
         app_dir = tempfile.gettempdir()
-    
-    return os.path.join(app_dir, 'device.id')
+    return os.path.join(app_dir, DEVICE_ID_FILE)
 
 def is_cloud():
-    """Detect if running in cloud environment like Railway"""
+    """Detect Railway"""
     return os.environ.get('RAILWAY_ENVIRONMENT') is not None
 
 def create_unique_device_id():
-    """Create a unique device ID"""
+    """Generate unique ID"""
     device_hash = hashlib.sha256(str(uuid.uuid4()).encode()).hexdigest()
-    device_id = ':'.join([device_hash[i:i+2].upper() for i in range(0, 12, 2)])
-    return device_id
+    return ':'.join([device_hash[i:i+2].upper() for i in range(0, 12, 2)])
 
 def get_device_id():
-    """Get or create unique device identifier with persistence"""
-    if is_cloud():
-        # Use browser cookie for cloud to persist across refreshes
-        cookie_script = """
-        <script>
-            function getCookie(name) {
-                let value = "; " + document.cookie;
-                let parts = value.split("; " + name + "=");
-                if (parts.length == 2) return parts.pop().split(";").shift();
-                return null;
-            }
-            function setCookie(name, value, days) {
-                let expires = "";
-                if (days) {
-                    let date = new Date();
-                    date.setTime(date.getTime() + (days * 24 * 60 * 60 * 1000));
-                    expires = "; expires=" + date.toUTCString();
-                }
-                document.cookie = name + "=" + (value || "") + expires + "; path=/";
-            }
-            let deviceId = getCookie('walmart_scraper_device_id');
-            if (!deviceId) {
-                deviceId = '%s';
-                setCookie('walmart_scraper_device_id', deviceId, 365);
-            }
-            window.deviceId = deviceId; // Expose to Streamlit
-        </script>
-        """
-        if DEVICE_ID_KEY not in st.session_state:
-            new_device_id = create_unique_device_id()
-            components.html(cookie_script % new_device_id, height=0)
-            st.session_state[DEVICE_ID_KEY] = new_device_id
-            if 'error_log' in st.session_state:
-                st.session_state.error_log.append(f"{datetime.datetime.now()}: Generated new device ID in cloud cookie: {new_device_id}")
-            return new_device_id
-        else:
-            device_id = st.session_state[DEVICE_ID_KEY]
-            components.html(cookie_script % device_id, height=0) # Ensure cookie is set
-            if 'error_log' in st.session_state:
-                st.session_state.error_log.append(f"{datetime.datetime.now()}: Retrieved device ID from session/cookie: {device_id}")
-            return device_id
-    else:
-        # File-based for local runs
-        device_path = get_system_path()
-        if os.path.exists(device_path):
-            try:
-                with open(device_path, 'r') as f:
-                    content = f.read().strip()
-                    if content and len(content) > 10:
-                        if re.match(r'^[A-F0-9]{2}(:[A-F0-9]{2}){5}$', content):
-                            if 'error_log' in st.session_state:
-                                st.session_state.error_log.append(f"{datetime.datetime.now()}: Read device ID from file {device_path}: {content}")
-                            return content
-            except Exception as e:
+    """Get persistent device ID, reuse if registered in Firebase"""
+    try:
+        # Check Firebase for registered device ID
+        FirebaseFunctions.initialize_firebase()
+        clients_ref = FirebaseFunctions._firestore_db.collection("licenses")
+        query = clients_ref.where("ClientDeviceId", "!=", None)
+        docs = query.stream()
+        for doc in docs:
+            data = doc.to_dict()
+            if data.get("ClientDeviceId"):
                 if 'error_log' in st.session_state:
-                    st.session_state.error_log.append(f"{datetime.datetime.now()}: Error reading device file {device_path}: {e}")
-        
-        # Create new device ID
-        device_id = create_unique_device_id()
-        
-        # Save to file
+                    st.session_state.error_log.append(f"{datetime.datetime.now()}: Reusing registered device ID from Firebase: {data['ClientDeviceId']}")
+                return data["ClientDeviceId"]
+    except Exception as e:
+        if 'error_log' in st.session_state:
+            st.session_state.error_log.append(f"{datetime.datetime.now()}: Firebase device ID check error: {e}")
+
+    # No registered ID in Firebase, check file
+    device_path = get_system_path()
+    if os.path.exists(device_path):
         try:
-            with open(device_path, 'w') as f:
-                f.write(device_id)
-            if 'error_log' in st.session_state:
-                st.session_state.error_log.append(f"{datetime.datetime.now()}: Saved device ID to {device_path}: {device_id}")
+            with open(device_path, 'r') as f:
+                content = f.read().strip()
+                if re.match(r'^[A-F0-9]{2}(:[A-F0-9]{2}){5}$', content):
+                    if 'error_log' in st.session_state:
+                        st.session_state.error_log.append(f"{datetime.datetime.now()}: Reusing device ID from file {device_path}: {content}")
+                    return content
         except Exception as e:
             if 'error_log' in st.session_state:
-                st.session_state.error_log.append(f"{datetime.datetime.now()}: Failed to save device file {device_path}: {e}")
-        
-        return device_id
+                st.session_state.error_log.append(f"{datetime.datetime.now()}: Error reading device file {device_path}: {e}")
 
-# Firebase Functions
+    # Generate new ID and save
+    device_id = create_unique_device_id()
+    try:
+        with open(device_path, 'w') as f:
+            f.write(device_id)
+        if 'error_log' in st.session_state:
+            st.session_state.error_log.append(f"{datetime.datetime.now()}: Generated and saved new device ID to {device_path}: {device_id}")
+    except Exception as e:
+        if 'error_log' in st.session_state:
+            st.session_state.error_log.append(f"{datetime.datetime.now()}: Failed to save device file {device_path}: {e}")
+    return device_id
+
+def clear_device_id():
+    """Clear device ID on logout"""
+    device_path = get_system_path()
+    if os.path.exists(device_path):
+        try:
+            os.remove(device_path)
+            if 'error_log' in st.session_state:
+                st.session_state.error_log.append(f"{datetime.datetime.now()}: Cleared device file {device_path}")
+        except Exception as e:
+            if 'error_log' in st.session_state:
+                st.session_state.error_log.append(f"{datetime.datetime.now()}: Error clearing device file {device_path}: {e}")
+
 class FirebaseFunctions:
     _firestore_db = None
     
     @staticmethod
     def initialize_firebase():
-        """Initialize Firebase connection"""
         if not firebase_admin._apps:
             firebase_env = os.getenv("FIREBASE_CREDENTIALS")
             if firebase_env:
@@ -151,89 +126,63 @@ class FirebaseFunctions:
     
     @staticmethod
     def is_device_already_registered(device_id):
-        """Check if device ID is already registered"""
         try:
             if FirebaseFunctions._firestore_db is None:
                 FirebaseFunctions.initialize_firebase()
-            
             clients_ref = FirebaseFunctions._firestore_db.collection("licenses")
             query = clients_ref.where("ClientDeviceId", "==", device_id)
             docs = list(query.stream())
-            
             return len(docs) > 0
-            
         except Exception as e:
-            st.session_state.error_log.append(f"{datetime.datetime.now()}: Error checking device registration: {e}")
+            if 'error_log' in st.session_state:
+                st.session_state.error_log.append(f"{datetime.datetime.now()}: Device reg check error: {e}")
             return False
     
     @staticmethod
     def get_registration_by_device_id(device_id):
-        """Get existing registration by device ID"""
         try:
             if FirebaseFunctions._firestore_db is None:
                 FirebaseFunctions.initialize_firebase()
-            
             clients_ref = FirebaseFunctions._firestore_db.collection("licenses")
             query = clients_ref.where("ClientDeviceId", "==", device_id)
             docs = list(query.stream())
-            
             if len(docs) > 0:
                 client_data = docs[0].to_dict()
                 client_data["id"] = docs[0].id
                 return client_data
             return None
-            
         except Exception as e:
-            st.session_state.error_log.append(f"{datetime.datetime.now()}: Error getting registration by device: {e}")
+            if 'error_log' in st.session_state:
+                st.session_state.error_log.append(f"{datetime.datetime.now()}: Get reg by device error: {e}")
             return None
     
     @staticmethod
     def is_client_eligible(client_data, expected_bot_name, expected_valid_date, device_id):
-        """Enhanced client eligibility check with strict device validation"""
         if client_data is None:
             return False
-        
         if str(client_data.get("ToolName", "")) != str(expected_bot_name):
             return False
-        
         if str(client_data.get("AccessStatus", "")) != "ON":
             return False
-        
         try:
-            date_string = client_data.get("ValidUntil")
-            if not date_string:
-                return False
-            
-            date_string = str(date_string)
+            date_string = str(client_data.get("ValidUntil", ""))
             date_formats = ["%d-%b-%y", "%Y-%m-%d", "%d-%m-%Y"]
-            
             valid_date = None
-            for date_format in date_formats:
+            for fmt in date_formats:
                 try:
-                    valid_date = datetime.datetime.strptime(date_string, date_format)
+                    valid_date = datetime.datetime.strptime(date_string, fmt)
                     break
                 except ValueError:
                     continue
-            
-            if valid_date is None:
+            if valid_date is None or valid_date < expected_valid_date:
                 return False
-            
-            if valid_date < expected_valid_date:
-                return False
-            
         except Exception as e:
             st.error(f"Date validation error: {e}")
             return False
-        
         registered_device = client_data.get("ClientDeviceId", "")
-        if not registered_device:
-            st.error("No device ID found in license data.")
+        if not registered_device or registered_device != device_id:
+            st.error(f"Device mismatch: Registered {registered_device}, Current {device_id}")
             return False
-        
-        if registered_device != device_id:
-            st.error(f"Device mismatch detected!\nRegistered device: {registered_device}\nCurrent device: {device_id}\nThis license is tied to a different device.")
-            return False
-        
         return True
     
     @staticmethod
@@ -241,19 +190,17 @@ class FirebaseFunctions:
         try:
             if FirebaseFunctions._firestore_db is None:
                 FirebaseFunctions.initialize_firebase()
-            
             clients_ref = FirebaseFunctions._firestore_db.collection("licenses")
             query = clients_ref.where("LicenseKey", "==", license_key)
             docs = list(query.stream())
-            
             if len(docs) > 0:
                 client_data = docs[0].to_dict()
                 client_data["id"] = docs[0].id
                 return client_data
             return None
-                
         except Exception as e:
-            st.session_state.error_log.append(f"{datetime.datetime.now()}: Error fetching client data by license key: {e}")
+            if 'error_log' in st.session_state:
+                st.session_state.error_log.append(f"{datetime.datetime.now()}: Get client by key error: {e}")
             return None
     
     @staticmethod
@@ -261,39 +208,16 @@ class FirebaseFunctions:
         try:
             if FirebaseFunctions._firestore_db is None:
                 FirebaseFunctions.initialize_firebase()
-            
             clients_ref = FirebaseFunctions._firestore_db.collection("licenses")
             query = clients_ref.where("ClientEmail", "==", email)
             docs = list(query.stream())
-            
             if len(docs) > 0:
                 client_data = docs[0].to_dict()
                 client_data["id"] = docs[0].id
                 return client_data
             return None
-                
         except Exception as e:
-            st.error(f"Error fetching client data by email: {e}")
-            return None
-    
-    @staticmethod
-    def get_client_data_by_device_id(device_id):
-        try:
-            if FirebaseFunctions._firestore_db is None:
-                FirebaseFunctions.initialize_firebase()
-            
-            clients_ref = FirebaseFunctions._firestore_db.collection("licenses")
-            query = clients_ref.where("ClientDeviceId", "==", device_id)
-            docs = list(query.stream())
-            
-            if len(docs) > 0:
-                client_data = docs[0].to_dict()
-                client_data["id"] = docs[0].id
-                return client_data
-            return None
-                
-        except Exception as e:
-            st.error(f"Error fetching client data by device: {e}")
+            st.error(f"Get client by email error: {e}")
             return None
     
     @staticmethod
@@ -301,29 +225,23 @@ class FirebaseFunctions:
         try:
             if FirebaseFunctions._firestore_db is None:
                 FirebaseFunctions.initialize_firebase()
-            
             license_key = FirebaseFunctions.generate_license_key()
             client_data["LicenseKey"] = license_key
             client_data["RegistrationDate"] = datetime.datetime.now().strftime("%Y-%m-%d")
             client_data["LastValidated"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             client_data["DailyUrlCount"] = 0
-            
             plan = client_data.get("Plan", "Free")
             plan_config = PLAN_LIMITS.get(plan, PLAN_LIMITS["Free"])
             client_data["DailyUrlLimit"] = plan_config["daily_limit"]
             client_data["ValidUntil"] = (datetime.datetime.now() + datetime.timedelta(days=plan_config["valid_days"])).strftime("%Y-%m-%d")
-            
             device_id = get_device_id()
             client_data["ClientDeviceId"] = device_id
-            
             clients_ref = FirebaseFunctions._firestore_db.collection("licenses")
             new_doc_ref = clients_ref.document()
             new_doc_ref.set(client_data)
-            
             return license_key, new_doc_ref.id
-            
         except Exception as e:
-            st.error(f"Error adding new client: {e}")
+            st.error(f"Add client error: {e}")
             return None, None
     
     @staticmethod
@@ -331,11 +249,9 @@ class FirebaseFunctions:
         try:
             if FirebaseFunctions._firestore_db is None:
                 FirebaseFunctions.initialize_firebase()
-            
             clients_ref = FirebaseFunctions._firestore_db.collection("licenses")
             query = clients_ref.where("LicenseKey", "==", license_key)
             docs = list(query.stream())
-            
             if len(docs) > 0:
                 batch = FirebaseFunctions._firestore_db.batch()
                 doc_ref = clients_ref.document(docs[0].id)
@@ -347,9 +263,9 @@ class FirebaseFunctions:
                 batch.commit()
                 return True
             return False
-                
         except Exception as e:
-            st.session_state.error_log.append(f"{datetime.datetime.now()}: Error updating client validation: {str(e)}")
+            if 'error_log' in st.session_state:
+                st.session_state.error_log.append(f"{datetime.datetime.now()}: Update validation error: {e}")
             return False
     
     @staticmethod
@@ -357,11 +273,9 @@ class FirebaseFunctions:
         try:
             if FirebaseFunctions._firestore_db is None:
                 FirebaseFunctions.initialize_firebase()
-            
             clients_ref = FirebaseFunctions._firestore_db.collection("licenses")
             query = clients_ref.where("LicenseKey", "==", license_key)
             docs = list(query.stream())
-            
             if len(docs) > 0:
                 batch = FirebaseFunctions._firestore_db.batch()
                 doc_ref = clients_ref.document(docs[0].id)
@@ -373,9 +287,9 @@ class FirebaseFunctions:
                 batch.commit()
                 return True
             return False
-                
         except Exception as e:
-            st.session_state.error_log.append(f"{datetime.datetime.now()}: Error retrying pending quota updates: {str(e)}")
+            if 'error_log' in st.session_state:
+                st.session_state.error_log.append(f"{datetime.datetime.now()}: Retry quota error: {e}")
             return False
     
     @staticmethod
@@ -383,19 +297,16 @@ class FirebaseFunctions:
         try:
             if FirebaseFunctions._firestore_db is None:
                 FirebaseFunctions.initialize_firebase()
-            
             clients_ref = FirebaseFunctions._firestore_db.collection("licenses")
             query = clients_ref.where("LicenseKey", "==", license_key)
             docs = list(query.stream())
-            
             if len(docs) > 0:
                 doc_ref = clients_ref.document(docs[0].id)
                 doc_ref.update({"DailyUrlCount": 0})
                 return True
             return False
-                
         except Exception as e:
-            st.error(f"Error resetting daily URL count: {e}")
+            st.error(f"Reset count error: {e}")
             return False
     
     @staticmethod
@@ -403,22 +314,16 @@ class FirebaseFunctions:
         chars = string.ascii_uppercase + string.digits
         return ''.join(random.choice(chars) for _ in range(length))
 
-# Helper Functions
 def check_license_eligibility(license_key, bot_name, device_id):
     try:
         expected_valid_date = datetime.datetime.now()
         client_data = FirebaseFunctions.get_client_data_by_license_key(license_key)
         if not client_data:
             return False, None
-        
         is_eligible = FirebaseFunctions.is_client_eligible(client_data, bot_name, expected_valid_date, device_id)
-        if not is_eligible:
-            return False, client_data
-        
-        return True, client_data
-        
+        return is_eligible, client_data
     except Exception as e:
-        st.error(f"License validation error: {e}")
+        st.error(f"License check error: {e}")
         return False, None
 
 def should_reset_daily_count(client_data):
@@ -434,23 +339,20 @@ def should_reset_daily_count(client_data):
 def validate_new_registration(email, device_id):
     existing_email = FirebaseFunctions.get_client_data_by_email(email)
     if existing_email:
-        return False, "An account with this email already exists. Please login with your existing license key."
-    
-    existing_device_registration = FirebaseFunctions.get_registration_by_device_id(device_id)
-    if existing_device_registration:
-        existing_email = existing_device_registration.get("ClientEmail", "Unknown")
-        return False, f"This device is already registered with email: {existing_email}. Please login with your existing license key or contact support if this is an error."
-    
-    return True, "Registration allowed"
+        return False, "Email already exists. Login with existing key."
+    existing_device = FirebaseFunctions.get_registration_by_device_id(device_id)
+    if existing_device:
+        return False, f"Device registered to {existing_device.get('ClientEmail', 'Unknown')}. Login or contact support."
+    return True, "OK"
 
 # Initialize Firebase
 try:
     FirebaseFunctions.initialize_firebase()
 except Exception as e:
-    st.error(f"Failed to initialize Firebase: {e}")
+    st.error(f"Firebase init error: {e}")
     st.stop()
 
-# Application State Management
+# App state
 if "app_state" not in st.session_state:
     st.session_state.app_state = "auth"
 if "user_data" not in st.session_state:
@@ -495,19 +397,7 @@ if "pending_quota_updates" not in st.session_state:
 if "rate_limit_delay" not in st.session_state:
     st.session_state.rate_limit_delay = 0.5
 
-# Clear Cookie on Logout (JavaScript)
-def clear_device_cookie():
-    if is_cloud():
-        clear_cookie_script = """
-        <script>
-            document.cookie = "walmart_scraper_device_id=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
-        </script>
-        """
-        components.html(clear_cookie_script, height=0)
-        if 'error_log' in st.session_state:
-            st.session_state.error_log.append(f"{datetime.datetime.now()}: Cleared device ID cookie")
-
-# Enhanced Auto-Login with Device Validation
+# Auto-login
 if st.session_state.app_state == "auth" and st.session_state.user_data is None:
     if os.path.exists(LOCAL_LICENSE_FILE) and not is_cloud():
         with open(LOCAL_LICENSE_FILE, "r") as f:
@@ -536,14 +426,13 @@ if st.session_state.app_state == "auth" and st.session_state.user_data is None:
                             st.session_state.local_scraped_count = 0
                         st.rerun()
                     else:
-                        st.warning("Saved license key is invalid or tied to a different device. Please re-enter your license key.")
-                        if os.path.exists(LOCAL_LICENSE_FILE):
-                            os.remove(LOCAL_LICENSE_FILE)
+                        st.warning("Saved license key is invalid or tied to a different device. Please re-enter.")
+                        os.remove(LOCAL_LICENSE_FILE)
                 except Exception as e:
                     st.warning(f"Auto-login failed: {e}")
                     st.session_state.error_log.append(f"{datetime.datetime.now()}: Auto-login error: {e}")
 
-# CSS for UI Styling
+# CSS
 st.markdown("""
 <style>
     div.stButton > button {
@@ -558,7 +447,6 @@ st.markdown("""
         text-overflow: ellipsis !important;
     }
     div.stButton > button:hover {
-        transition: background-color 0.3s, border-color 0.3s;
         border: 1px solid #ffffff !important;
     }
     div.stTextInput > div > div > input {
@@ -591,7 +479,6 @@ st.markdown("""
         text-overflow: ellipsis !important;
     }
     div.stDownloadButton > button:hover {
-        transition: background-color 0.3s, border-color 0.3s;
         border: 1px solid #ffffff !important;
     }
     div[data-testid="stFileUploaderDropzone"] button {
@@ -606,7 +493,6 @@ st.markdown("""
         text-overflow: ellipsis !important;
     }
     div[data-testid="stFileUploaderDropzone"] button:hover {
-        transition: background-color 0.3s, border-color 0.3s;
         border: 1px solid #ffffff !important;
     }
     section[data-testid="stSidebar"] {
@@ -929,12 +815,11 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Enhanced Authentication Interface
+# Auth Interface
 if st.session_state.app_state == "auth":
     st.title("Walmart Product Scraper")
     st.markdown("**Professional-grade data extraction for market research and competitive analysis.**")
     
-    # Debug Info
     with st.expander("Device ID Debug Info", expanded=False):
         device_id = get_device_id()
         st.write(f"**Device ID:** `{device_id}`")
@@ -950,10 +835,8 @@ if st.session_state.app_state == "auth":
     
     with tab1:
         st.subheader("Create Your Account")
-        
         try:
             device_id = get_device_id()
-            
             existing_registration = FirebaseFunctions.get_registration_by_device_id(device_id)
             if existing_registration:
                 existing_email = existing_registration.get("ClientEmail", "Unknown")
@@ -969,7 +852,6 @@ if st.session_state.app_state == "auth":
             else:
                 with st.form("registration_form"):
                     col1, col2 = st.columns([3, 2])
-                    
                     with col1:
                         full_name = st.text_input("Full Name", placeholder="John Doe")
                         email = st.text_input("Email Address", placeholder="john@example.com")
@@ -981,18 +863,14 @@ if st.session_state.app_state == "auth":
                             "Enterprise Plan - 5,000 URLs/Day (1 Year)"
                         ], help="Choose your subscription plan")
                         base_plan = selected_plan.split(" - ")[0].replace(" Plan", "")
-                        
                     with col2:
                         st.text_input("Device ID", value=device_id, disabled=True, 
                                      help="Unique identifier for this device")
                         registration_date = datetime.datetime.now().strftime("%Y-%m-%d")
                         st.text_input("Registration Date", value=registration_date, disabled=True)
-                    
                     agree_terms = st.checkbox("I agree to the Terms of Service and Privacy Policy")
                     dont_ask = st.checkbox("Don't ask again on this device", value=True)
-                    
                     submitted = st.form_submit_button("Create Account")
-                    
                     if submitted:
                         with st.spinner("Creating account and validating device..."):
                             if not all([full_name, email, firecrawl_api_key]):
@@ -1016,9 +894,7 @@ if st.session_state.app_state == "auth":
                                             "DailyUrlCount": 0,
                                             "FirecrawlApiKey": firecrawl_api_key
                                         }
-                                        
                                         license_key, doc_id = FirebaseFunctions.add_new_client(client_data)
-                                        
                                         if license_key:
                                             client_data["LicenseKey"] = license_key
                                             client_data["id"] = doc_id
@@ -1026,11 +902,9 @@ if st.session_state.app_state == "auth":
                                             st.session_state.license_valid = True
                                             st.session_state.app_state = "scraping"
                                             st.session_state.firecrawl_api_key = firecrawl_api_key
-                                            
                                             if dont_ask and not is_cloud():
                                                 with open(LOCAL_LICENSE_FILE, "w") as f:
                                                     f.write(license_key)
-                                            
                                             st.success(f"""
                                             Account Created Successfully!
                                             
@@ -1040,34 +914,28 @@ if st.session_state.app_state == "auth":
                                             
                                             Important: Save your license key securely. This device is now linked to your account.
                                             """)
-                                            
                                             st.session_state.error_log.append(f"{datetime.datetime.now()}: New account registered - Email: {email}, Device: {device_id}, Plan: {base_plan}")
                                             st.rerun()
                                         else:
                                             st.error("Failed to create account. Please try again or contact support.")
-                                            
                                     except Exception as e:
                                         st.error(f"Account creation failed: {e}")
                                         st.session_state.error_log.append(f"{datetime.datetime.now()}: Account creation error: {e}")
-                
         except Exception as e:
             st.error(f"Device validation failed: {e}")
             st.session_state.error_log.append(f"{datetime.datetime.now()}: Device validation error: {e}")
     
     with tab2:
         st.subheader("Login to Your Account")
-        
         try:
             device_id = get_device_id()
         except Exception as e:
             st.error(f"Device validation failed: {e}")
             st.stop()
-        
         license_key = st.text_input("License Key", type="password", placeholder="Enter your license key")
         st.text_input("Device ID", value=device_id, disabled=True, 
                      help="This must match the device ID used during registration")
         dont_ask = st.checkbox("Don't ask again on this device")
-        
         if st.button("Validate License"):
             if license_key:
                 with st.spinner("Validating license and device..."):
@@ -1076,7 +944,6 @@ if st.session_state.app_state == "auth":
                         if dont_ask and not is_cloud():
                             with open(LOCAL_LICENSE_FILE, "w") as f:
                                 f.write(license_key)
-                        
                         st.session_state.user_data = client_data
                         st.session_state.license_valid = True
                         st.session_state.app_state = "scraping"
@@ -1089,12 +956,10 @@ if st.session_state.app_state == "auth":
                         st.session_state.daily_urls_used = client_data.get("DailyUrlCount", 0)
                         st.session_state.local_scraped_count = 0
                         st.session_state.pending_quota_updates = []
-                        
                         if should_reset_daily_count(client_data):
                             FirebaseFunctions.reset_daily_url_count(license_key)
                             st.session_state.daily_urls_used = 0
                             st.session_state.local_scraped_count = 0
-                        
                         st.success("License validated successfully!")
                         st.rerun()
                     else:
@@ -1111,12 +976,11 @@ if st.session_state.app_state == "auth":
                                 """)
             else:
                 st.error("Please enter your license key.")
-
+    
     st.stop()
 
-# Main Scraper Interface
+# Scraper Interface
 if st.session_state.app_state == "scraping":
-    # Sidebar
     st.sidebar.header("Scraper Settings")
     def sidebar_header(title, icon_path=None, subtitle=None, icon_width=24):
         html = '<div style="display: flex; align-items: center; margin-bottom: 10px;">'
@@ -1156,8 +1020,6 @@ if st.session_state.app_state == "scraping":
         "Sizes", "Seller", "Shipping", "Pickups", "Return_policy",
         "Images", "Videos", "Category", "Breadcrumbs", "Sourceurl"
     ]
-    if "selected_fields" not in st.session_state:
-        st.session_state.selected_fields = fields.copy()
     with st.sidebar.expander("Select Data Fields", expanded=True):
         for dc in fields:
             checked = st.checkbox(dc, value=dc in st.session_state.selected_fields, key=f"field_{dc}")
@@ -1176,12 +1038,11 @@ if st.session_state.app_state == "scraping":
         **Pending Quota Updates:** {len(st.session_state.pending_quota_updates)}  
         **Device ID:** {get_device_id()}
         """)
+    
     if st.sidebar.button("Logout"):
         if os.path.exists(LOCAL_LICENSE_FILE) and not is_cloud():
             os.remove(LOCAL_LICENSE_FILE)
-        if os.path.exists(get_system_path()) and not is_cloud():
-            os.remove(get_system_path())
-        clear_device_cookie()
+        clear_device_id()
         st.session_state.app_state = "auth"
         st.session_state.user_data = None
         st.session_state.license_valid = False
@@ -1191,17 +1052,13 @@ if st.session_state.app_state == "scraping":
         st.session_state.pending_quota_updates = []
         st.session_state.firecrawl_api_key = ""
         st.session_state.error_log = []
-        if DEVICE_ID_KEY in st.session_state:
-            del st.session_state[DEVICE_ID_KEY]
         st.rerun()
 
-    # Page Config
     image_path = "D:/icon2.png"
     try:
         st.set_page_config(page_title="Walmart Product Scraper", layout="wide", initial_sidebar_state="expanded")
     except:
         pass
-        
     if os.path.exists(image_path):
         st.image(image_path, width=300)
     st.title("Walmart Product Scraper")
@@ -1261,196 +1118,139 @@ if st.session_state.app_state == "scraping":
     if urls:
         st.write(f"URLs to scrape: {len(urls)} URLs")
 
-    if st.button("Start Scraping", disabled=not urls) and not st.session_state.scraping_in_progress:
+    if st.button("Start Scraping", disabled=not urls or st.session_state.scraping_in_progress):
         st.session_state.scraping_in_progress = True
         st.session_state.current_scraping_index = 0
         st.session_state.total_urls = len(urls)
         st.session_state.scraped_count = 0
         st.session_state.error_count = 0
         st.session_state.local_scraped_count = 0
-        st.session_state.pending_quota_updates = []
         st.session_state.all_data = []
-        st.session_state.error_log = []
-        st.session_state.progress_bar = st.progress(0)
-        st.session_state.preview_df = st.empty()
-        st.session_state.status_text = st.empty()
-        st.session_state.start_time = time.time()
+        license_key = st.session_state.user_data.get("LicenseKey", "")
         device_id = get_device_id()
-        avg_time_per_url = 0
 
-    if st.session_state.scraping_in_progress:
-        i = st.session_state.current_scraping_index
-        if i < st.session_state.total_urls:
-            if st.session_state.daily_urls_used >= max_urls:
-                st.error("Daily URL limit reached. Cannot scrape more.")
-                st.session_state.scraping_in_progress = False
-                st.rerun()
-            with st.spinner(f"Scraping URL {i+1}/{st.session_state.total_urls}: {urls[i]}"):
-                scraped_success = False
-                row = None
-                try:
-                    prompt = f"""
-                    Extract structured product details from this page.
-                    Return ONLY these fields as valid JSON: {', '.join(st.session_state.selected_fields)}.
-                    """
-                    res = firecrawl.extract(urls=[urls[i]], prompt=prompt)
-                    if res and res.data:
-                        data = res.data
-                        data["Sourceurl"] = urls[i]
-                        row = {
-                            f: (data.get(f, "") if not isinstance(data.get(f, ""), list)
-                                else "; ".join(map(str, data.get(f, ""))))
-                            for f in st.session_state.selected_fields
-                        }
-                        scraped_success = True
-                    else:
-                        st.session_state.error_log.append(f"{datetime.datetime.now()}: Skipped URL {urls[i]}: No data returned")
-                        st.warning(f"Skipped URL {urls[i]}: No data returned.")
-                except Exception as e:
-                    st.session_state.error_log.append(f"{datetime.datetime.now()}: Skipped URL {urls[i]}: Error - {str(e)}")
-                    st.warning(f"Skipped URL {urls[i]}: Error - {str(e)}.")
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        error_container = st.empty()
 
-                if row is not None:
-                    st.session_state.all_data.append(row)
-                    st.session_state.scraped_count += 1
+        for i in range(len(urls)):
+            if not st.session_state.scraping_in_progress:
+                break
+            st.session_state.current_scraping_index = i
+            url = urls[i]
+            status_text.text(f"Scraping URL {i + 1}/{len(urls)}: {url}")
+            try:
+                if st.session_state.local_scraped_count + len(st.session_state.pending_quota_updates) >= max_urls:
+                    st.error(f"Daily URL limit of {max_urls} reached.")
+                    break
+                response = firecrawl.scrape_url(url, params={"pageOptions": {"onlyMainContent": False}})
+                if response.get("success") and response.get("data"):
+                    data = response["data"]
+                    scraped_item = {}
+                    for field in st.session_state.selected_fields:
+                        if field == "Product Title":
+                            scraped_item[field] = data.get("title", "")
+                        elif field == "Brand":
+                            scraped_item[field] = data.get("metadata", {}).get("brand", "")
+                        elif field == "Price":
+                            scraped_item[field] = data.get("metadata", {}).get("price", "")
+                        elif field == "Availability":
+                            scraped_item[field] = data.get("metadata", {}).get("availability", "")
+                        elif field == "Rating":
+                            scraped_item[field] = data.get("metadata", {}).get("rating", "")
+                        elif field == "Review_count":
+                            scraped_item[field] = data.get("metadata", {}).get("reviewCount", "")
+                        elif field == "Description":
+                            scraped_item[field] = data.get("content", "")
+                        elif field == "Highlights":
+                            scraped_item[field] = data.get("metadata", {}).get("highlights", [])
+                        elif field == "Specifications":
+                            scraped_item[field] = data.get("metadata", {}).get("specifications", {})
+                        elif field == "Variants":
+                            scraped_item[field] = data.get("metadata", {}).get("variants", [])
+                        elif field == "Colors":
+                            scraped_item[field] = data.get("metadata", {}).get("colors", [])
+                        elif field == "Sizes":
+                            scraped_item[field] = data.get("metadata", {}).get("sizes", [])
+                        elif field == "Seller":
+                            scraped_item[field] = data.get("metadata", {}).get("seller", "")
+                        elif field == "Shipping":
+                            scraped_item[field] = data.get("metadata", {}).get("shipping", "")
+                        elif field == "Pickups":
+                            scraped_item[field] = data.get("metadata", {}).get("pickups", "")
+                        elif field == "Return_policy":
+                            scraped_item[field] = data.get("metadata", {}).get("returnPolicy", "")
+                        elif field == "Images":
+                            scraped_item[field] = data.get("metadata", {}).get("images", [])
+                        elif field == "Videos":
+                            scraped_item[field] = data.get("metadata", {}).get("videos", [])
+                        elif field == "Category":
+                            scraped_item[field] = data.get("metadata", {}).get("category", "")
+                        elif field == "Breadcrumbs":
+                            scraped_item[field] = data.get("metadata", {}).get("breadcrumbs", [])
+                        elif field == "Sourceurl":
+                            scraped_item[field] = url
+                    st.session_state.all_data.append(scraped_item)
                     st.session_state.local_scraped_count += 1
-                    license_key = st.session_state.user_data.get("LicenseKey", "")
+                    st.session_state.scraped_count += 1
+                    st.session_state.pending_quota_updates.append(url)
+                    progress_bar.progress((i + 1) / len(urls))
                     try:
-                        updated = FirebaseFunctions.update_client_validation(license_key, device_id, 1)
-                        if updated:
+                        if FirebaseFunctions.update_client_validation(license_key, device_id, 1):
                             st.session_state.daily_urls_used += 1
-                            st.session_state.error_log.append(f"{datetime.datetime.now()}: Quota updated successfully for URL {urls[i]}")
+                            st.session_state.pending_quota_updates.pop()
                         else:
-                            st.session_state.pending_quota_updates.append(urls[i])
-                            st.session_state.error_log.append(f"{datetime.datetime.now()}: Quota update failed for URL {urls[i]}: Update returned False")
-                            st.warning(f"Failed to update quota for URL {urls[i]}. Added to pending updates.")
+                            st.warning(f"Failed to update quota for URL {url}. Will retry later.")
                     except Exception as e:
-                        st.session_state.pending_quota_updates.append(urls[i])
-                        st.session_state.error_log.append(f"{datetime.datetime.now()}: Quota update failed for URL {urls[i]}: {str(e)}")
-                        st.warning(f"Failed to update quota for URL {urls[i]}: {str(e)}. Added to pending updates.")
+                        st.warning(f"Quota update error for {url}: {e}. Will retry later.")
+                        st.session_state.error_log.append(f"{datetime.datetime.now()}: Quota update error for {url}: {e}")
+                    time.sleep(st.session_state.rate_limit_delay)
                 else:
                     st.session_state.error_count += 1
-                
-                time.sleep(st.session_state.rate_limit_delay)
-            
-            if st.session_state.all_data:
-                try:
-                    temp_df = pd.DataFrame(st.session_state.all_data)
-                    plan_limits = {
-                        "free": 50,
-                        "basic": 500,
-                        "premium": 2500,
-                        "enterprise": 5000
-                    }
-                    display_limit = min(len(temp_df), plan_limits.get(st.session_state.user_tier, 50))
-                    st.session_state.preview_df.dataframe(temp_df.head(display_limit), use_container_width=True, height=200)
-                except Exception as e:
-                    st.session_state.error_log.append(f"{datetime.datetime.now()}: Preview update error: {str(e)}")
-            
-            progress = (i + 1) / st.session_state.total_urls
-            st.session_state.progress_bar.progress(progress)
-            percentage = int(progress * 100)
-            
-            try:
-                elapsed_time = time.time() - st.session_state.start_time
-                if i + 1 > 0:
-                    avg_time_per_url = elapsed_time / (i + 1)
-                remaining_urls = st.session_state.total_urls - (i + 1)
-                estimated_remaining = avg_time_per_url * remaining_urls
-                eta_minutes = int(estimated_remaining // 60)
-                eta_seconds = int(estimated_remaining % 60)
-                eta_str = f"ETA: {eta_minutes}m {eta_seconds}s" if estimated_remaining > 0 else ""
+                    error_container.error(f"Failed to scrape {url}: {response.get('error', 'Unknown error')}")
+                    st.session_state.error_log.append(f"{datetime.datetime.now()}: Scrape error for {url}: {response.get('error', 'Unknown error')}")
             except Exception as e:
-                eta_str = "ETA: Calculating..."
-                st.session_state.error_log.append(f"{datetime.datetime.now()}: ETA calculation error: {str(e)}")
-            
-            st.session_state.status_text.text(f"Status: {percentage}% complete | {st.session_state.scraped_count} scraped | {st.session_state.error_count} errors | {eta_str}")
-        
-            st.session_state.current_scraping_index += 1
-            st.rerun()
+                st.session_state.error_count += 1
+                error_container.error(f"Error scraping {url}: {e}")
+                st.session_state.error_log.append(f"{datetime.datetime.now()}: Scrape error for {url}: {e}")
+                time.sleep(st.session_state.rate_limit_delay)
 
-        if st.session_state.current_scraping_index >= st.session_state.total_urls:
-            st.session_state.scraping_in_progress = False
-            if st.session_state.all_data:
-                try:
-                    st.session_state.scraped_data = st.session_state.all_data
-                    if st.session_state.pending_quota_updates:
-                        with st.spinner("Applying pending quota updates..."):
-                            success = FirebaseFunctions.retry_pending_quota_updates(
-                                st.session_state.user_data.get("LicenseKey", ""),
-                                get_device_id(),
-                                st.session_state.pending_quota_updates
-                            )
-                            if success:
-                                st.session_state.daily_urls_used += len(st.session_state.pending_quota_updates)
-                                st.session_state.error_log.append(f"{datetime.datetime.now()}: Successfully applied {len(st.session_state.pending_quota_updates)} pending quota updates")
-                                st.session_state.pending_quota_updates = []
-                            else:
-                                st.session_state.error_log.append(f"{datetime.datetime.now()}: Failed to apply {len(st.session_state.pending_quota_updates)} pending quota updates")
-                    
-                    st.success(f"Scraping completed! Success: {st.session_state.scraped_count}, Errors: {st.session_state.error_count}")
-                except Exception as e:
-                    st.session_state.error_log.append(f"{datetime.datetime.now()}: Finalization error: {str(e)}")
-            else:
-                st.warning("No data extracted. Check URLs.")
-            st.rerun()
-
-    if st.session_state.scraped_data:
-        try:
-            df = pd.DataFrame(st.session_state.scraped_data)
-            plan_limits = {
-                "free": 50,
-                "basic": 500,
-                "premium": 2500,
-                "enterprise": 5000
-            }
-            display_limit = min(len(df), plan_limits.get(st.session_state.user_tier, 50))
-            st.subheader("Data Preview")
-            st.dataframe(df.head(display_limit), use_container_width=True, height=400)
-
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.download_button(
-                    "Download Sample",
-                    df.head(50).to_csv(index=False).encode("utf-8"),
-                    "sample_walmart_products.csv",
-                    "text/csv",
-                    help="Downloads up to 50 rows"
-                )
-            with col2:
-                if st.session_state.user_tier == "premium":
-                    st.download_button(
-                        "Download Full Data",
-                        df.to_csv(index=False).encode("utf-8"),
-                        "walmart_products.csv",
-                        "text/csv"
-                    )
+        if st.session_state.pending_quota_updates:
+            try:
+                if FirebaseFunctions.retry_pending_quota_updates(license_key, device_id, st.session_state.pending_quota_updates):
+                    st.session_state.daily_urls_used += len(st.session_state.pending_quota_updates)
+                    st.session_state.pending_quota_updates = []
+                    st.success("Successfully synced all pending quota updates.")
                 else:
-                    st.button("Download Full Data (Premium Only)",
-                             help="Upgrade to premium for full datasets")
-            with col3:
-                if st.button("Clear Data"):
-                    st.session_state.scraped_data = []
-                    st.success("Data cleared!")
-                    st.rerun()
-        except Exception as e:
-            st.session_state.error_log.append(f"{datetime.datetime.now()}: Data display error: {str(e)}")
+                    st.warning("Failed to sync some quota updates. They will be retried on next run.")
+            except Exception as e:
+                st.warning(f"Error syncing pending quota updates: {e}")
+                st.session_state.error_log.append(f"{datetime.datetime.now()}: Error syncing pending quota updates: {e}")
+
+        st.session_state.scraping_in_progress = False
+        status_text.text(f"Scraping complete: {st.session_state.scraped_count} successful, {st.session_state.error_count} failed")
+        progress_bar.empty()
+
+    if st.session_state.all_data:
+        st.subheader("Scraped Data")
+        df = pd.DataFrame(st.session_state.all_data)
+        st.dataframe(df)
+        csv = df.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="Download CSV",
+            data=csv,
+            file_name=f"walmart_scraped_data_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            mime="text/csv"
+        )
+        if st.button("Clear Data"):
+            st.session_state.all_data = []
+            st.session_state.scraped_data = []
+            st.session_state.scraped_count = 0
+            st.session_state.error_count = 0
+            st.session_state.local_scraped_count = 0
+            st.rerun()
 
     if st.session_state.error_log:
-        with st.expander("Debug: Error Log", expanded=False):
-            for log_entry in st.session_state.error_log[-20:]:
-                st.text(log_entry)
-
-    st.markdown("---")
-    st.subheader("Tutorial Video")
-    st.video("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
-    st.markdown("---")
-    st.markdown("""
-    <div style="text-align: center; font-size: 14px; padding: 20px 0;">
-        <strong>Umisoft Walmart Scraper</strong><br>
-        Empower your business with real-time product insights.<br>
-        Premium features include unlimited scraping and dedicated support.<br>
-        Contact: <a href="mailto:support@umisoft.com" style="text-decoration: none;">support@umisoft.com</a> | © 2025 Umisoft Ltd. | Version 2.0
-    </div>
-    """, unsafe_allow_html=True)
-
+        with st.expander("Error Log", expanded=False):
+            for log in st.session_state.error_log[-10:]:
+                st.write(log)

@@ -25,111 +25,192 @@ LOCAL_LICENSE_FILE = ".walmart_scraper_license"
 DEVICE_ID_FILE = ".device_id"
 
 def is_cloud():
-    """Detect Railway"""
-    return os.environ.get('RAILWAY_ENVIRONMENT') is not None
+    """Detect Railway or other cloud environments"""
+    return (os.environ.get('RAILWAY_ENVIRONMENT') is not None or 
+            os.environ.get('STREAMLIT_SHARING_MODE') is not None or
+            os.environ.get('STREAMLIT_CLOUD') is not None)
 
-def create_device_fingerprint():
+def create_server_fallback_id():
     """
-    Server-side fallback (used only when there is no browser device id available).
-    Provides a stable hash per machine/environment.
+    Server-side fallback ID generation.
+    Creates a semi-stable ID based on session info when browser storage fails.
     """
     try:
-        node = uuid.getnode()
-        seed = f"{node}-{os.getenv('HOSTNAME','')}-{os.getenv('COMPUTERNAME','')}"
-        device_hash = hashlib.sha256(seed.encode()).hexdigest()
-        return device_hash[:16].upper()
-    except Exception:
-        return hashlib.sha256(str(uuid.uuid1()).encode()).hexdigest()[:16].upper()
+        # Use Streamlit's session info if available
+        session_id = getattr(st.runtime.get_instance(), 'session_id', None)
+        if session_id:
+            return hashlib.sha256(f"streamlit-{session_id}".encode()).hexdigest()[:16].upper()
+    except:
+        pass
+    
+    # Final fallback - random but at least unique per session
+    if 'fallback_device_id' not in st.session_state:
+        st.session_state.fallback_device_id = hashlib.sha256(str(uuid.uuid4()).encode()).hexdigest()[:16].upper()
+    
+    return st.session_state.fallback_device_id
 
-
-def _inject_browser_device_js(local_key="device_id_streamlit_app"):
-    js = f"""
+def inject_device_id_script():
+    """
+    Inject JavaScript to handle browser-based device ID with better error handling
+    """
+    js_code = """
     <script>
-    (function() {{
-        const key = "{local_key}";
-        try {{
-            let id = localStorage.getItem(key);
-            if (!id) {{
-                if (typeof crypto !== 'undefined' && crypto.randomUUID) {{
-                    id = crypto.randomUUID();
-                }} else {{
-                    id = 'did-' + Math.floor(Math.random()*1e16).toString(36);
-                }}
-                localStorage.setItem(key, id);
-            }}
-            const params = new URLSearchParams(window.location.search);
-            if (params.get('device_id') !== id) {{
-                params.set('device_id', id);
-                const newUrl = window.location.origin + window.location.pathname + '?' + params.toString() + window.location.hash;
-                // replace to avoid creating history entries
-                window.location.replace(newUrl);
-            }}
-        }} catch(e) {{
-            console.log('Device ID JS error', e);
-        }}
-    }})();
+    (function() {
+        const DEVICE_ID_KEY = 'walmart_scraper_device_id';
+        const URL_PARAM_KEY = 'device_id';
+        
+        function generateDeviceId() {
+            // Try crypto.randomUUID() first (modern browsers)
+            if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+                return crypto.randomUUID().replace(/-/g, '').substring(0, 16).toUpperCase();
+            }
+            
+            // Fallback to crypto.getRandomValues()
+            if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+                const array = new Uint8Array(8);
+                crypto.getRandomValues(array);
+                return Array.from(array, byte => byte.toString(16).padStart(2, '0')).join('').toUpperCase();
+            }
+            
+            // Final fallback to Math.random()
+            return 'DEV' + Math.floor(Math.random() * 1e13).toString(36).toUpperCase().padStart(13, '0');
+        }
+        
+        function setDeviceIdInUrl(deviceId) {
+            try {
+                const url = new URL(window.location);
+                const currentDeviceId = url.searchParams.get(URL_PARAM_KEY);
+                
+                if (currentDeviceId !== deviceId) {
+                    url.searchParams.set(URL_PARAM_KEY, deviceId);
+                    // Use replaceState to avoid creating browser history entries
+                    window.history.replaceState({}, '', url.toString());
+                    
+                    // Trigger a page refresh to let Streamlit pick up the new parameter
+                    setTimeout(() => {
+                        window.location.reload();
+                    }, 100);
+                }
+            } catch (error) {
+                console.warn('Failed to set device ID in URL:', error);
+            }
+        }
+        
+        function getOrCreateDeviceId() {
+            let deviceId = null;
+            
+            // Try to get from localStorage first
+            try {
+                deviceId = localStorage.getItem(DEVICE_ID_KEY);
+            } catch (error) {
+                console.warn('localStorage not available:', error);
+            }
+            
+            // If no device ID found, generate a new one
+            if (!deviceId) {
+                deviceId = generateDeviceId();
+                
+                // Try to save to localStorage
+                try {
+                    localStorage.setItem(DEVICE_ID_KEY, deviceId);
+                } catch (error) {
+                    console.warn('Failed to save device ID to localStorage:', error);
+                    // Continue anyway - we'll use the generated ID for this session
+                }
+            }
+            
+            return deviceId;
+        }
+        
+        // Main execution
+        try {
+            const deviceId = getOrCreateDeviceId();
+            setDeviceIdInUrl(deviceId);
+            
+            // Store in a global variable as additional fallback
+            window.streamlitDeviceId = deviceId;
+            
+            // Log success (can be removed in production)
+            console.log('Device ID initialized:', deviceId);
+            
+        } catch (error) {
+            console.error('Device ID initialization failed:', error);
+        }
+    })();
     </script>
     """
-    # Invisible small iframe/html injection to run the JS
-    components.html(js, height=0)
-
+    
+    # Use components.html with a small height to inject the script invisibly
+    components.html(js_code, height=1)
 
 def get_device_id():
     """
-    Ensure a stable device id per browser by:
-    1) reading from ?device_id query param (set by JS),
-    2) falling back to local file (for local runs),
-    3) injecting JS to set localStorage (no hard stop if JS blocked),
-    4) final fallback to server-side fingerprint.
+    Get or generate a stable device ID using multiple fallback strategies:
+    1. Check if already cached in session state
+    2. Try to get from URL parameters (set by JavaScript)
+    3. Try to get from local file (for local development)
+    4. Inject JavaScript to handle browser storage
+    5. Fall back to server-side generation
     """
+    
+    # Strategy 1: Check session state cache
     if 'device_id' in st.session_state and st.session_state.device_id:
         return st.session_state.device_id
-
-    # 1) Check query params (JS will add ?device_id=... on first load)
-    params = st.experimental_get_query_params()
-    q_device = params.get('device_id', [None])[0]
-    if q_device:
-        st.session_state.device_id = q_device
-        # Persist locally for non-cloud convenience
-        if not is_cloud():
-            try:
-                with open(DEVICE_ID_FILE, 'w') as f:
-                    f.write(q_device)
-            except Exception as e:
-                if 'error_log' in st.session_state:
-                    st.session_state.error_log.append(f"{datetime.datetime.now()}: Failed to write device file: {e}")
-        return q_device
-
-    # 2) Local file fallback (useful for local runs / non-browser contexts)
+    
+    # Strategy 2: Check URL parameters (modern Streamlit)
+    try:
+        query_params = st.query_params
+        device_id_from_url = query_params.get('device_id')
+        
+        if device_id_from_url:
+            st.session_state.device_id = device_id_from_url
+            # Persist locally for non-cloud convenience
+            if not is_cloud():
+                try:
+                    with open(DEVICE_ID_FILE, 'w') as f:
+                        f.write(device_id_from_url)
+                except Exception as e:
+                    if 'error_log' in st.session_state:
+                        st.session_state.error_log.append(f"{datetime.datetime.now()}: Failed to write device file: {e}")
+            return device_id_from_url
+    except:
+        # Fallback for older Streamlit versions or if query_params fails
+        pass
+    
+    # Strategy 3: Check local file (for development environments)
     if not is_cloud() and os.path.exists(DEVICE_ID_FILE):
         try:
             with open(DEVICE_ID_FILE, 'r') as f:
-                sid = f.read().strip()
-            if sid:
-                st.session_state.device_id = sid
-                return sid
+                stored_id = f.read().strip()
+            if stored_id and len(stored_id) >= 8:  # Basic validation
+                st.session_state.device_id = stored_id
+                return stored_id
         except Exception as e:
             if 'error_log' in st.session_state:
                 st.session_state.error_log.append(f"{datetime.datetime.now()}: Failed reading device file: {e}")
-
-    # 3) Inject JS (will reload page once if JS enabled). If JS disabled, just continue.
+    
+    # Strategy 4: Inject JavaScript to create browser-based ID
     try:
-        _inject_browser_device_js()
+        inject_device_id_script()
+        # The JS will reload the page with the device_id parameter
+        # This function will be called again after reload and will pick up the ID from URL
     except Exception as e:
         if 'error_log' in st.session_state:
             st.session_state.error_log.append(f"{datetime.datetime.now()}: JS injection failed: {e}")
-
-    # 4) Final fallback: server-side fingerprint
-    sid = create_device_fingerprint()
-    st.session_state.device_id = sid
+    
+    # Strategy 5: Server-side fallback
+    fallback_id = create_server_fallback_id()
+    st.session_state.device_id = fallback_id
+    
+    # Try to persist the fallback ID locally
     if not is_cloud():
         try:
             with open(DEVICE_ID_FILE, 'w') as f:
-                f.write(sid)
+                f.write(fallback_id)
         except Exception:
             pass
-    return sid
-
+    
+    return fallback_id
 
 def clear_device_id():
     """Clear on logout"""
@@ -380,7 +461,7 @@ except Exception as e:
     st.error(f"Firebase init error: {e}")
     st.stop()
 
-# App state
+# App state initialization
 if "app_state" not in st.session_state:
     st.session_state.app_state = "auth"
 if "user_data" not in st.session_state:
@@ -482,11 +563,10 @@ if st.session_state.app_state == "auth" and st.session_state.user_data is None:
                     except Exception as e:
                         st.session_state.error_log.append(f"{datetime.datetime.now()}: Auto-login error: {e}")
     except Exception as e:
-        st.error("JavaScript is required to run this app. Please enable JavaScript in your browser or contact support.")
+        st.error("Device ID initialization failed. Please refresh the page or enable JavaScript.")
         st.session_state.error_log.append(f"{datetime.datetime.now()}: Auto-login error: {e}")
-        st.stop()
 
-# CSS
+# CSS Styles
 st.markdown("""
 <style>
     div.stButton > button {
@@ -535,74 +615,6 @@ st.markdown("""
     div.stDownloadButton > button:hover {
         border: 1px solid #ffffff !important;
     }
-    div[data-testid="stFileUploaderDropzone"] button {
-        border-radius: 8px;
-        padding: 10px 20px;
-        font-weight: bold;
-        transition: background-color 0.3s, border-color 0.3s;
-        border: 1px solid #000000 !important;
-        min-height: 40px !important;
-        white-space: nowrap !important;
-        overflow: hidden !important;
-        text-overflow: ellipsis !important;
-    }
-    div[data-testid="stFileUploaderDropzone"] button:hover {
-        border: 1px solid #ffffff !important;
-    }
-    section[data-testid="stSidebar"] {
-        padding: 20px;
-        border-right: 1px solid #000000 !important;
-    }
-    div.stTabs [data-baseweb="tab"] {
-        border-radius: 8px 8px 0 0;
-        padding: 10px 20px;
-        margin: 0 5px;
-        border: 1px solid #000000 !important;
-        border-bottom: none;
-    }
-    div.stTabs [data-baseweb="tab"]:hover {
-        background-color: #e0e0e0 !important;
-    }
-    div.stTabs [aria-selected="true"] {
-        background-color: #e0e0e0 !important;
-    }
-    div.stDataFrame {
-        border-radius: 8px;
-        border: 1px solid #000000 !important;
-    }
-    div.stAlert {
-        border-radius: 8px;
-        padding: 15px;
-        border: 1px solid #000000 !important;
-    }
-    div.stExpander {
-        border-radius: 8px;
-        border: 1px solid #000000 !important;
-    }
-    div.stRadio > div {
-        border-radius: 8px;
-        border: 1px solid #000000 !important;
-    }
-    div.stForm {
-        padding: 20px;
-        border-radius: 8px;
-        border: 1px solid #000000 !important;
-    }
-    div.stVideo {
-        max-width: 600px;
-        margin: 0 auto;
-        display: block;
-    }
-    div.element-container {
-        margin-bottom: 5px;
-    }
-    div.stProgress > div > div > div > div {
-        background-color: #000000 !important;
-    }
-    div.stSpinner > div {
-        border-top-color: #000000 !important;
-        border-left-color: #000000 !important;
-    }
     .custom-info {
         display: inline-block;
         padding: 5px 10px;
@@ -610,31 +622,6 @@ st.markdown("""
         border-radius: 5px;
         font-size: 14px;
         margin: 5px 0;
-    }
-    .upgrade-info {
-        display: inline-block;
-        padding: 10px;
-        border: 1px solid #000000 !important;
-        border-radius: 5px;
-        font-size: 14px;
-        margin: 10px 0;
-    }
-    .hidden-form {
-        display: none;
-    }
-    .account-info {
-        margin-top: 20px;
-    }
-    .account-info .name {
-        font-weight: bold;
-        cursor: pointer;
-    }
-    .account-info .details {
-        display: none;
-        margin-top: 5px;
-    }
-    .account-info.expanded .details {
-        display: block;
     }
     @media (prefers-color-scheme: dark) {
         .stApp {
@@ -660,97 +647,16 @@ st.markdown("""
             color: #CCCCCC !important;
             opacity: 1;
         }
-        div.stSelectbox > div > div > select {
-            background-color: #1E1E1E !important;
-            color: #ffffff !important;
-            border-color: #ffffff !important;
-        }
-        div.stDownloadButton > button {
-            background-color: #ffffff !important;
-            color: #000000 !important;
-            border-color: #ffffff !important;
-        }
-        div.stDownloadButton > button:hover {
-            background-color: #000000 !important;
-            color: #ffffff !important;
-            border-color: #ffffff !important;
-        }
-        div[data-testid="stFileUploaderDropzone"] button {
-            background-color: #ffffff !important;
-            color: #000000 !important;
-            border-color: #ffffff !important;
-        }
-        div[data-testid="stFileUploaderDropzone"] button:hover {
-            background-color: #000000 !important;
-            color: #ffffff !important;
-            border-color: #ffffff !important;
-        }
-        section[data-testid="stSidebar"] {
-            background-color: #1E1E1E !important;
-            border-right-color: #ffffff !important;
-        }
-        div.stTabs [data-baseweb="tab"] {
-            background-color: #1E1E1E !important;
-            color: #ffffff !important;
-            border-color: #ffffff !important;
-        }
-        div.stTabs [data-baseweb="tab"]:hover {
-            background-color: #333333 !important;
-        }
-        div.stTabs [aria-selected="true"] {
-            background-color: #333333 !important;
-        }
-        div.stDataFrame {
-            background-color: #1E1E1E !important;
-            color: #ffffff !important;
-        }
-        div.stAlert {
-            background-color: #333333 !important;
-            color: #ffffff !important;
-        }
-        div.stExpander {
-            background-color: #1E1E1E !important;
-        }
-        div.stRadio > div {
-            background-color: #1E1E1E !important;
-        }
-        div.stCheckbox > label {
-            color: #ffffff !important;
-        }
-        div.stForm {
-            background-color: #1E1E1E !important;
-        }
-        div.stProgress > div > div > div > div {
-            background-color: #000000 !important;
-        }
-        div.stSpinner > div {
-            border-top-color: #000000 !important;
-            border-left-color: #000000 !important;
-        }
         .custom-info {
             background-color: #333333 !important;
             color: #ffffff !important;
             border-color: #ffffff !important;
-        }
-        .upgrade-info {
-            background-color: #444444 !important;
-            color: #ffffff !important;
-            border-color: #ffffff !important;
-        }
-        .account-info .name {
-            color: #ffffff !important;
-        }
-        .account-info .details {
-            color: #ffffff !important;
         }
     }
     @media (prefers-color-scheme: light) {
         .stApp {
             background-color: #ffffff !important;
             color: #000000 !important;
-            padding: 20px !important;
-            max-width: 1200px !important;
-            margin: 0 auto !important;
         }
         div.stButton > button {
             background-color: #000000 !important;
@@ -762,109 +668,11 @@ st.markdown("""
             color: #000000 !important;
             border-color: #000000 !important;
         }
-        div.stTextInput > div > div > input {
-            background-color: #f8f8f8 !important;
-            color: #000000 !important;
-            border-color: #000000 !important;
-        }
-        div.stTextInput > div > div > input::placeholder {
-            color: #666666 !important;
-            opacity: 1;
-        }
-        div.stSelectbox > div > div > select {
-            background-color: #f8f8f8 !important;
-            color: #000000 !important;
-            border-color: #000000 !important;
-        }
-        div.stDownloadButton > button {
-            background-color: #ffffff !important;
-            color: #000000 !important;
-            border-color: #000000 !important;
-        }
-        div.stDownloadButton > button:hover {
-            background-color: #000000 !important;
-            color: #ffffff !important;
-            border-color: #000000 !important;
-        }
-        div[data-testid="stFileUploaderDropzone"] button {
-            background-color: #000000 !important;
-            color: #ffffff !important;
-            border-color: #000000 !important;
-        }
-        div[data-testid="stFileUploaderDropzone"] button:hover {
-            background-color: #ffffff !important;
-            color: #000000 !important;
-            border-color: #000000 !important;
-        }
-        section[data-testid="stSidebar"] {
-            background-color: #f8f8f8 !important;
-            border-right-color: #000000 !important;
-        }
-        div.stTabs [data-baseweb="tab"] {
-            background-color: #f8f8f8 !important;
-            color: #000000 !important;
-            border-color: #000000 !important;
-        }
-        div.stTabs [data-baseweb="tab"]:hover {
-            background-color: #e0e0e0 !important;
-        }
-        div.stTabs [aria-selected="true"] {
-            background-color: #e0e0e0 !important;
-        }
-        div.stDataFrame {
-            background-color: #ffffff !important;
-            color: #000000 !important;
-        }
-        div.stAlert {
-            background-color: #f0f0f0 !important;
-            color: #000000 !important;
-        }
-        div.stExpander {
-            background-color: #f8f8f8 !important;
-        }
-        div.stRadio > div {
-            background-color: #f8f8f8 !important;
-        }
-        div.stCheckbox > label {
-            color: #000000 !important;
-        }
-        div.stForm {
-            background-color: #f8f8f8 !important;
-        }
-        div.stProgress > div > div > div > div {
-            background-color: #000000 !important;
-        }
-        div.stSpinner > div {
-            border-top-color: #000000 !important;
-            border-left-color: #000000 !important;
-        }
         .custom-info {
             background-color: #f8f8f8 !important;
             color: #000000 !important;
             border-color: #000000 !important;
         }
-        .upgrade-info {
-            background-color: #f0f0f0 !important;
-            color: #000000 !important;
-            border-color: #000000 !important;
-        }
-        .account-info .name {
-            color: #000000 !important;
-        }
-        .account-info .details {
-            color: #000000 !important;
-        }
-    }
-    div.stProgress {
-        width: 100% !important;
-        margin: 10px 0 !important;
-    }
-    div.stProgress > div {
-        background-color: #333333 !important;
-        border-radius: 8px !important;
-    }
-    div.stProgress > div > div {
-        border-radius: 8px !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -956,7 +764,7 @@ if st.session_state.app_state == "auth":
         try:
             device_id = get_device_id()
         except Exception as e:
-            st.error("JavaScript is required to run this app. Please enable JavaScript in your browser or contact support.")
+            st.error("Device ID initialization failed. Please enable JavaScript in your browser or contact support.")
             st.session_state.error_log.append(f"{datetime.datetime.now()}: Device validation error: {e}")
             st.stop()
         license_key = st.text_input("License Key", type="password", placeholder="Enter your license key")
@@ -1281,4 +1089,3 @@ if st.session_state.app_state == "scraping":
         with st.expander("Error Log", expanded=False):
             for log in st.session_state.error_log[-10:]:
                 st.write(log)
-

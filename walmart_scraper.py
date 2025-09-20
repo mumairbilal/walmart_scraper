@@ -1,3 +1,4 @@
+```python
 import base64
 import datetime
 import os
@@ -15,6 +16,7 @@ import json
 import hashlib
 import platform
 import tempfile
+import streamlit.components.v1 as components
 
 PLAN_LIMITS = {
     "Free": {"daily_limit": 50, "valid_days": 7},
@@ -25,6 +27,7 @@ PLAN_LIMITS = {
 
 LOCAL_LICENSE_FILE = ".walmart_scraper_license"
 DEVICE_ID_KEY = "device_id"
+COOKIE_NAME = "walmart_scraper_device_id"
 
 def get_system_path():
     """Get system-specific path for device ID file (used only in local runs)"""
@@ -60,17 +63,45 @@ def create_unique_device_id():
 def get_device_id():
     """Get or create unique device identifier with persistence"""
     if is_cloud():
-        # Use session_state for cloud to ensure per-client uniqueness
+        # Use browser cookie for cloud to persist across refreshes
+        cookie_script = """
+        <script>
+            function getCookie(name) {
+                let value = "; " + document.cookie;
+                let parts = value.split("; " + name + "=");
+                if (parts.length == 2) return parts.pop().split(";").shift();
+                return null;
+            }
+            function setCookie(name, value, days) {
+                let expires = "";
+                if (days) {
+                    let date = new Date();
+                    date.setTime(date.getTime() + (days * 24 * 60 * 60 * 1000));
+                    expires = "; expires=" + date.toUTCString();
+                }
+                document.cookie = name + "=" + (value || "") + expires + "; path=/";
+            }
+            let deviceId = getCookie('walmart_scraper_device_id');
+            if (!deviceId) {
+                deviceId = '%s';
+                setCookie('walmart_scraper_device_id', deviceId, 365);
+            }
+            window.deviceId = deviceId; // Expose to Streamlit
+        </script>
+        """
         if DEVICE_ID_KEY not in st.session_state:
-            device_id = create_unique_device_id()
-            st.session_state[DEVICE_ID_KEY] = device_id
+            new_device_id = create_unique_device_id()
+            components.html(cookie_script % new_device_id, height=0)
+            st.session_state[DEVICE_ID_KEY] = new_device_id
             if 'error_log' in st.session_state:
-                st.session_state.error_log.append(f"{datetime.datetime.now()}: Generated new device ID in cloud session: {device_id}")
+                st.session_state.error_log.append(f"{datetime.datetime.now()}: Generated new device ID in cloud cookie: {new_device_id}")
+            return new_device_id
         else:
             device_id = st.session_state[DEVICE_ID_KEY]
+            components.html(cookie_script % device_id, height=0) # Ensure cookie is set
             if 'error_log' in st.session_state:
-                st.session_state.error_log.append(f"{datetime.datetime.now()}: Retrieved device ID from session: {device_id}")
-        return device_id
+                st.session_state.error_log.append(f"{datetime.datetime.now()}: Retrieved device ID from session/cookie: {device_id}")
+            return device_id
     else:
         # File-based for local runs
         device_path = get_system_path()
@@ -465,9 +496,21 @@ if "pending_quota_updates" not in st.session_state:
 if "rate_limit_delay" not in st.session_state:
     st.session_state.rate_limit_delay = 0.5
 
+# Clear Cookie on Logout (JavaScript)
+def clear_device_cookie():
+    if is_cloud():
+        clear_cookie_script = """
+        <script>
+            document.cookie = "walmart_scraper_device_id=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
+        </script>
+        """
+        components.html(clear_cookie_script, height=0)
+        if 'error_log' in st.session_state:
+            st.session_state.error_log.append(f"{datetime.datetime.now()}: Cleared device ID cookie")
+
 # Enhanced Auto-Login with Device Validation
 if st.session_state.app_state == "auth" and st.session_state.user_data is None:
-    if os.path.exists(LOCAL_LICENSE_FILE):
+    if os.path.exists(LOCAL_LICENSE_FILE) and not is_cloud():
         with open(LOCAL_LICENSE_FILE, "r") as f:
             saved_key = f.read().strip()
         if saved_key:
@@ -1139,6 +1182,7 @@ if st.session_state.app_state == "scraping":
             os.remove(LOCAL_LICENSE_FILE)
         if os.path.exists(get_system_path()) and not is_cloud():
             os.remove(get_system_path())
+        clear_device_cookie()
         st.session_state.app_state = "auth"
         st.session_state.user_data = None
         st.session_state.license_valid = False
@@ -1410,3 +1454,4 @@ if st.session_state.app_state == "scraping":
         Contact: <a href="mailto:support@umisoft.com" style="text-decoration: none;">support@umisoft.com</a> | © 2025 Umisoft Ltd. | Version 2.0
     </div>
     """, unsafe_allow_html=True)
+```

@@ -1,7 +1,6 @@
 import base64
 import datetime
 import os
-import re
 import time
 import uuid
 import string

@@ -5,3 +5,4 @@ pandas
 requests
 streamlit-option-menu
 netifaces
+psutil

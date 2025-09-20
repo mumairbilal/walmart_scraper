@@ -16,10 +16,8 @@ from firebase_admin import credentials, firestore
 import json
 from streamlit_option_menu import option_menu
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import psutil
 import hashlib
 import platform
-import subprocess
 import tempfile
 
 PLAN_LIMITS = {
@@ -30,7 +28,7 @@ PLAN_LIMITS = {
 }
 
 LOCAL_LICENSE_FILE = ".walmart_scraper_license"
-DEVICE_ID_FILE = ".device_fingerprint"
+DEVICE_ID_FILE = ".device_id"
 
 def get_system_path():
     """Get system-specific path for device ID"""
@@ -51,186 +49,14 @@ def get_system_path():
     
     return os.path.join(app_dir, 'device.id')
 
-def get_comprehensive_system_info():
-    """Get comprehensive system information for unique fingerprinting"""
-    info = {}
-    
-    try:
-        # Basic system info
-        info['platform'] = platform.platform()
-        info['machine'] = platform.machine()
-        info['processor'] = platform.processor()
-        info['architecture'] = platform.architecture()[0]
-        info['system'] = platform.system()
-        info['release'] = platform.release()
-        info['version'] = platform.version()
-        info['hostname'] = platform.node()
-        
-        # Network interfaces (more reliable than MAC)
-        try:
-            import netifaces
-            interfaces = netifaces.interfaces()
-            info['network_interfaces'] = sorted(interfaces)
-        except ImportError:
-            # Fallback without netifaces
-            try:
-                import socket
-                hostname = socket.gethostname()
-                info['ip_address'] = socket.gethostbyname(hostname)
-            except:
-                info['ip_address'] = 'unknown'
-        
-        # CPU info
-        try:
-            info['cpu_count'] = psutil.cpu_count(logical=False)
-            info['cpu_count_logical'] = psutil.cpu_count(logical=True)
-            if hasattr(psutil, 'cpu_freq'):
-                cpu_freq = psutil.cpu_freq()
-                if cpu_freq:
-                    info['cpu_freq_max'] = cpu_freq.max
-        except:
-            pass
-        
-        # Memory info
-        try:
-            memory = psutil.virtual_memory()
-            info['total_memory'] = memory.total
-        except:
-            pass
-        
-        # Disk info
-        try:
-            disk_usage = psutil.disk_usage('/')
-            info['disk_total'] = disk_usage.total
-        except:
-            try:
-                disk_usage = psutil.disk_usage('C:\\' if platform.system() == 'Windows' else '/')
-                info['disk_total'] = disk_usage.total
-            except:
-                pass
-        
-        # Environment-specific info
-        info['user'] = os.environ.get('USER', os.environ.get('USERNAME', 'unknown'))
-        info['home'] = os.environ.get('HOME', os.environ.get('USERPROFILE', 'unknown'))
-        
-        # Cloud platform detection
-        cloud_indicators = {}
-        
-        # Railway detection
-        if os.environ.get('RAILWAY_ENVIRONMENT'):
-            cloud_indicators['railway'] = True
-            cloud_indicators['railway_service'] = os.environ.get('RAILWAY_SERVICE_NAME', 'unknown')
-            cloud_indicators['railway_project'] = os.environ.get('RAILWAY_PROJECT_NAME', 'unknown')
-            cloud_indicators['railway_env'] = os.environ.get('RAILWAY_ENVIRONMENT', 'unknown')
-        
-        # Heroku detection
-        if os.environ.get('DYNO'):
-            cloud_indicators['heroku'] = True
-            cloud_indicators['dyno'] = os.environ.get('DYNO', 'unknown')
-        
-        # Render detection
-        if os.environ.get('RENDER'):
-            cloud_indicators['render'] = True
-            cloud_indicators['render_service'] = os.environ.get('RENDER_SERVICE_NAME', 'unknown')
-        
-        # Streamlit Cloud detection
-        if os.environ.get('STREAMLIT_CLOUD'):
-            cloud_indicators['streamlit_cloud'] = True
-        
-        info['cloud_platform'] = cloud_indicators
-        
-        # Browser/session specific info (for Streamlit)
-        try:
-            # Get Streamlit session info if available
-            if hasattr(st, 'session_state') and hasattr(st.session_state, '_session_id'):
-                info['streamlit_session'] = st.session_state._session_id
-        except:
-            pass
-        
-        # User agent from headers (if running in web context)
-        try:
-            if 'streamlit' in str(type(st.session_state)):
-                # Try to get browser fingerprint
-                info['user_agent_hash'] = hashlib.md5(
-                    str(st.session_state.get('user_agent', 'unknown')).encode()
-                ).hexdigest()[:8]
-        except:
-            pass
-            
-    except Exception as e:
-        info['error'] = str(e)
-    
-    return info
-
 def create_unique_device_id():
-    """Create a truly unique device ID using comprehensive fingerprinting"""
-    
-    # Get comprehensive system info
-    sys_info = get_comprehensive_system_info()
-    
-    # Create multiple entropy sources
-    timestamp = str(time.time_ns())
-    uuid1 = str(uuid.uuid4())
-    uuid2 = str(uuid.uuid4())
-    random_seed = random.randint(100000, 999999)
-    random.seed(random_seed)
-    random_nums = ''.join([str(random.randint(0, 9)) for _ in range(50)])
-    
-    # Browser/client specific entropy
-    try:
-        # Try to get some browser-specific info if running in Streamlit
-        browser_entropy = []
-        
-        # Use Streamlit session state as entropy source
-        if hasattr(st, 'session_state'):
-            session_keys = list(st.session_state.keys())
-            browser_entropy.append(str(hash(tuple(sorted(session_keys)))))
-            
-        # Add current URL parameters if available
-        try:
-            query_params = st.experimental_get_query_params()
-            if query_params:
-                browser_entropy.append(str(hash(tuple(sorted(query_params.items())))))
-        except:
-            pass
-            
-        browser_string = '_'.join(browser_entropy) if browser_entropy else str(random.randint(10000, 99999))
-        
-    except:
-        browser_string = str(random.randint(10000, 99999))
-    
-    # Combine all entropy sources
-    entropy_parts = [
-        timestamp,
-        uuid1,
-        uuid2,
-        random_nums,
-        str(sys_info.get('hostname', 'unknown')),
-        str(sys_info.get('platform', 'unknown')),
-        str(sys_info.get('processor', 'unknown')),
-        str(sys_info.get('total_memory', 'unknown')),
-        str(sys_info.get('disk_total', 'unknown')),
-        str(sys_info.get('user', 'unknown')),
-        str(sys_info.get('cloud_platform', {})),
-        browser_string,
-        str(random_seed),
-        str(id(sys_info)),  # Memory address of the info dict
-        str(os.getpid()),  # Process ID
-    ]
-    
-    # Create final entropy string
-    entropy = '_'.join(entropy_parts)
-    
-    # Create hash
-    device_hash = hashlib.sha256(entropy.encode('utf-8')).hexdigest()
-    
-    # Format as MAC-like address for consistency
+    """Create a unique device ID"""
+    device_hash = hashlib.sha256(str(uuid.uuid4()).encode()).hexdigest()
     device_id = ':'.join([device_hash[i:i+2].upper() for i in range(0, 12, 2)])
-    
-    return device_id, sys_info
+    return device_id
 
-def get_mac_address():
-    """Get or create unique device identifier with better persistence"""
+def get_device_id():
+    """Get or create unique device identifier with persistence"""
     
     device_path = get_system_path()
     
@@ -248,128 +74,18 @@ def get_mac_address():
                 st.session_state.error_log.append(f"Error reading existing device ID: {e}")
     
     # Create new device ID
-    device_id, sys_info = create_unique_device_id()
+    device_id = create_unique_device_id()
     
-    # Save the device ID and system info
+    # Save the device ID
     try:
         with open(device_path, 'w') as f:
             f.write(device_id)
-        
-        # Save detailed backup info
-        backup_info = {
-            'device_id': device_id,
-            'created': datetime.datetime.now().isoformat(),
-            'system_info': sys_info,
-            'path': device_path,
-            'version': '2.0'
-        }
-        
-        backup_path = device_path.replace('.id', '_info.json')
-        with open(backup_path, 'w') as f:
-            json.dump(backup_info, f, indent=2, default=str)
             
     except Exception as e:
         if 'error_log' in st.session_state:
             st.session_state.error_log.append(f"Device ID save error: {e}")
     
     return device_id
-
-def get_browser_fingerprint():
-    """Get browser-specific fingerprint for additional uniqueness"""
-    try:
-        fingerprint_parts = []
-        
-        # Try to get browser info through Streamlit
-        if hasattr(st, 'session_state'):
-            # Session state fingerprint
-            session_hash = hash(str(sorted(st.session_state.keys())))
-            fingerprint_parts.append(str(session_hash))
-        
-        # Time-based component (but stable within session)
-        session_time = str(int(time.time() / 3600))  # Changes every hour
-        fingerprint_parts.append(session_time)
-        
-        # Random but persistent component
-        if 'browser_fingerprint_seed' not in st.session_state:
-            st.session_state.browser_fingerprint_seed = str(uuid.uuid4())
-        fingerprint_parts.append(st.session_state.browser_fingerprint_seed)
-        
-        # Create fingerprint
-        fingerprint = hashlib.md5('_'.join(fingerprint_parts).encode()).hexdigest()[:12]
-        return fingerprint.upper()
-        
-    except Exception:
-        # Fallback to random but session-persistent ID
-        if 'fallback_browser_id' not in st.session_state:
-            st.session_state.fallback_browser_id = str(uuid.uuid4())[:12].upper()
-        return st.session_state.fallback_browser_id
-
-# Test function
-def test_device_uniqueness():
-    """Test device ID generation and show detailed info"""
-    st.write("**Device Test Results:**")
-    
-    # Current device info
-    current_id = get_mac_address()
-    device_path = get_system_path()
-    sys_info = get_comprehensive_system_info()
-    browser_fp = get_browser_fingerprint()
-    
-    st.write(f"- **Device ID:** `{current_id}`")
-    st.write(f"- **Browser Fingerprint:** `{browser_fp}`")
-    st.write(f"- **Platform:** {sys_info.get('platform', 'Unknown')}")
-    st.write(f"- **Hostname:** {sys_info.get('hostname', 'Unknown')}")
-    st.write(f"- **File Path:** `{device_path}`")
-    st.write(f"- **File Exists:** {'✅' if os.path.exists(device_path) else '❌'}")
-    
-    # Cloud platform info
-    cloud_info = sys_info.get('cloud_platform', {})
-    if cloud_info:
-        st.write(f"- **Cloud Platform:** {cloud_info}")
-    
-    # Test multiple generations
-    st.write("\n**Uniqueness Test:**")
-    test_ids = []
-    for i in range(5):
-        test_id, _ = create_unique_device_id()
-        test_ids.append(test_id)
-        st.write(f"- Test ID {i+1}: `{test_id}`")
-        time.sleep(0.01)  # Small delay for timestamp variation
-    
-    unique_count = len(set(test_ids))
-    st.write(f"- Generated {len(test_ids)} IDs, {unique_count} unique ({'✅' if unique_count == len(test_ids) else '❌'})")
-    
-    # System entropy test
-    st.write("\n**System Information:**")
-    st.json(sys_info)
-    
-    return current_id
-
-def force_new_device_id():
-    """Force create new device ID"""
-    device_path = get_system_path()
-    backup_path = device_path.replace('.id', '_info.json')
-    
-    try:
-        # Remove existing files
-        for path in [device_path, backup_path]:
-            if os.path.exists(path):
-                os.remove(path)
-        
-        # Clear session state browser fingerprint
-        if 'browser_fingerprint_seed' in st.session_state:
-            del st.session_state.browser_fingerprint_seed
-        if 'fallback_browser_id' in st.session_state:
-            del st.session_state.fallback_browser_id
-        
-        # Create new ID
-        new_id = get_mac_address()
-        st.success(f"New Device ID Created: `{new_id}`")
-        return new_id
-        
-    except Exception as e:
-        st.error(f"Error creating new device ID: {e}")
-        return None
 
 # -------------------------------
 # Firebase License Functions
@@ -405,31 +121,31 @@ class FirebaseFunctions:
         return all_client_data
     
     @staticmethod
-    def is_mac_already_registered(mac_address):
-        """Check if MAC address is already registered"""
+    def is_device_already_registered(device_id):
+        """Check if device ID is already registered"""
         try:
             if FirebaseFunctions._firestore_db is None:
                 FirebaseFunctions.initialize_firebase()
             
             clients_ref = FirebaseFunctions._firestore_db.collection("licenses")
-            query = clients_ref.where("ClientMacAddress", "==", mac_address)
+            query = clients_ref.where("ClientDeviceId", "==", device_id)
             docs = list(query.stream())
             
             return len(docs) > 0
             
         except Exception as e:
-            st.session_state.error_log.append(f"{datetime.datetime.now()}: Error checking MAC registration: {e}")
+            st.session_state.error_log.append(f"{datetime.datetime.now()}: Error checking device registration: {e}")
             return False
     
     @staticmethod
-    def get_registration_by_mac(mac_address):
-        """Get existing registration by MAC address"""
+    def get_registration_by_device_id(device_id):
+        """Get existing registration by device ID"""
         try:
             if FirebaseFunctions._firestore_db is None:
                 FirebaseFunctions.initialize_firebase()
             
             clients_ref = FirebaseFunctions._firestore_db.collection("licenses")
-            query = clients_ref.where("ClientMacAddress", "==", mac_address)
+            query = clients_ref.where("ClientDeviceId", "==", device_id)
             docs = list(query.stream())
             
             if len(docs) > 0:
@@ -439,12 +155,12 @@ class FirebaseFunctions:
             return None
             
         except Exception as e:
-            st.session_state.error_log.append(f"{datetime.datetime.now()}: Error getting registration by MAC: {e}")
+            st.session_state.error_log.append(f"{datetime.datetime.now()}: Error getting registration by device: {e}")
             return None
     
     @staticmethod
-    def is_client_eligible(client_data, expected_bot_name, expected_valid_date, mac_address):
-        """Enhanced client eligibility check with strict MAC validation"""
+    def is_client_eligible(client_data, expected_bot_name, expected_valid_date, device_id):
+        """Enhanced client eligibility check with strict device validation"""
         if client_data is None:
             return False
         
@@ -483,14 +199,14 @@ class FirebaseFunctions:
             st.error(f"Date validation error: {e}")
             return False
         
-        # STRICT MAC address validation
-        registered_mac = client_data.get("ClientMacAddress", "")
-        if not registered_mac:
-            st.error("No MAC address found in license data.")
+        # STRICT device ID validation
+        registered_device = client_data.get("ClientDeviceId", "")
+        if not registered_device:
+            st.error("No device ID found in license data.")
             return False
         
-        if registered_mac != mac_address:
-            st.error(f"Device mismatch detected!\nRegistered device: {registered_mac}\nCurrent device: {mac_address}\nThis license is tied to a different device.")
+        if registered_device != device_id:
+            st.error(f"Device mismatch detected!\nRegistered device: {registered_device}\nCurrent device: {device_id}\nThis license is tied to a different device.")
             return False
         
         return True
@@ -538,14 +254,14 @@ class FirebaseFunctions:
             return None
     
     @staticmethod
-    def get_client_data_by_mac(mac_address):
-        """Get client data by MAC address"""
+    def get_client_data_by_device_id(device_id):
+        """Get client data by device ID"""
         try:
             if FirebaseFunctions._firestore_db is None:
                 FirebaseFunctions.initialize_firebase()
             
             clients_ref = FirebaseFunctions._firestore_db.collection("licenses")
-            query = clients_ref.where("ClientMacAddress", "==", mac_address)
+            query = clients_ref.where("ClientDeviceId", "==", device_id)
             docs = list(query.stream())
             
             if len(docs) > 0:
@@ -555,7 +271,7 @@ class FirebaseFunctions:
             return None
                 
         except Exception as e:
-            st.error(f"Error fetching client data by MAC: {e}")
+            st.error(f"Error fetching client data by device: {e}")
             return None
     
     @staticmethod
@@ -577,8 +293,8 @@ class FirebaseFunctions:
             client_data["DailyUrlLimit"] = plan_config["daily_limit"]
             client_data["ValidUntil"] = (datetime.datetime.now() + datetime.timedelta(days=plan_config["valid_days"])).strftime("%Y-%m-%d")
             
-            mac_address = get_mac_address()
-            client_data["ClientMacAddress"] = mac_address
+            device_id = get_device_id()
+            client_data["ClientDeviceId"] = device_id
             
             clients_ref = FirebaseFunctions._firestore_db.collection("licenses")
             new_doc_ref = clients_ref.document()
@@ -591,8 +307,8 @@ class FirebaseFunctions:
             return None, None
     
     @staticmethod
-    def update_client_validation(license_key, mac_address, url_count):
-        """Update last validated time, MAC address, and daily URL count in Firebase using a batch"""
+    def update_client_validation(license_key, device_id, url_count):
+        """Update last validated time, device ID, and daily URL count in Firebase using a batch"""
         try:
             if FirebaseFunctions._firestore_db is None:
                 FirebaseFunctions.initialize_firebase()
@@ -606,7 +322,7 @@ class FirebaseFunctions:
                 doc_ref = clients_ref.document(docs[0].id)
                 batch.update(doc_ref, {
                     "LastValidated": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "ClientMacAddress": mac_address,
+                    "ClientDeviceId": device_id,
                     "DailyUrlCount": firestore.Increment(url_count)
                 })
                 batch.commit()
@@ -618,7 +334,7 @@ class FirebaseFunctions:
             return False
     
     @staticmethod
-    def retry_pending_quota_updates(license_key, mac_address, pending_updates):
+    def retry_pending_quota_updates(license_key, device_id, pending_updates):
         """Retry pending quota updates in a batch"""
         try:
             if FirebaseFunctions._firestore_db is None:
@@ -633,7 +349,7 @@ class FirebaseFunctions:
                 doc_ref = clients_ref.document(docs[0].id)
                 batch.update(doc_ref, {
                     "LastValidated": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "ClientMacAddress": mac_address,
+                    "ClientDeviceId": device_id,
                     "DailyUrlCount": firestore.Increment(len(pending_updates))
                 })
                 batch.commit()
@@ -674,7 +390,7 @@ class FirebaseFunctions:
 # -------------------------------
 # Helper Functions
 # -------------------------------
-def check_license_eligibility(license_key, bot_name, mac_address):
+def check_license_eligibility(license_key, bot_name, device_id):
     """Check if license is eligible with security checks"""
     try:
         expected_valid_date = datetime.datetime.now()
@@ -682,7 +398,7 @@ def check_license_eligibility(license_key, bot_name, mac_address):
         if not client_data:
             return False, None
         
-        is_eligible = FirebaseFunctions.is_client_eligible(client_data, bot_name, expected_valid_date, mac_address)
+        is_eligible = FirebaseFunctions.is_client_eligible(client_data, bot_name, expected_valid_date, device_id)
         if not is_eligible:
             return False, client_data
         
@@ -703,17 +419,17 @@ def should_reset_daily_count(client_data):
     except ValueError:
         return True
 
-def validate_new_registration(email, mac_address):
+def validate_new_registration(email, device_id):
     """Validate new registration attempt"""
     # Check if email already exists
     existing_email = FirebaseFunctions.get_client_data_by_email(email)
     if existing_email:
         return False, "An account with this email already exists. Please login with your existing license key."
     
-    # Check if MAC address already registered
-    existing_mac_registration = FirebaseFunctions.get_registration_by_mac(mac_address)
-    if existing_mac_registration:
-        existing_email = existing_mac_registration.get("ClientEmail", "Unknown")
+    # Check if device ID already registered
+    existing_device_registration = FirebaseFunctions.get_registration_by_device_id(device_id)
+    if existing_device_registration:
+        existing_email = existing_device_registration.get("ClientEmail", "Unknown")
         return False, f"This device is already registered with email: {existing_email}. Please login with your existing license key or contact support if this is an error."
     
     return True, "Registration allowed"
@@ -784,8 +500,8 @@ if st.session_state.app_state == "auth" and st.session_state.user_data is None:
         if saved_key:
             with st.spinner("Auto-validating saved license..."):
                 try:
-                    mac = get_mac_address()
-                    is_eligible, client_data = check_license_eligibility(saved_key, "walmart_scraper", mac)
+                    device = get_device_id()
+                    is_eligible, client_data = check_license_eligibility(saved_key, "walmart_scraper", device)
                     if is_eligible:
                         st.session_state.user_data = client_data
                         st.session_state.license_valid = True
@@ -1211,23 +927,6 @@ if st.session_state.app_state == "auth":
     st.title("Walmart Product Scraper")
     st.markdown("**Professional-grade data extraction for market research and competitive analysis.**")
     
-    # Add device testing section for debugging
-    with st.expander("Device ID Testing (For Debugging)", expanded=False):
-        st.info("Use this section to test and debug device ID generation")
-        
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            if st.button("Test Device Uniqueness"):
-                test_device_uniqueness()
-        with col2:
-            if st.button("Force New Device ID"):
-                force_new_device_id()
-        with col3:
-            if st.button("Show Current Device ID"):
-                current_id = get_mac_address()
-                st.code(current_id)
-                st.write(f"Device ID: `{current_id}`")
-    
     tab1, tab2 = st.tabs(["New Registration", "Existing User"])
     
     with tab1:
@@ -1235,10 +934,10 @@ if st.session_state.app_state == "auth":
         
         # Get device ID early for validation
         try:
-            device_id = get_mac_address()
+            device_id = get_device_id()
             
             # Check if this device is already registered
-            existing_registration = FirebaseFunctions.get_registration_by_mac(device_id)
+            existing_registration = FirebaseFunctions.get_registration_by_device_id(device_id)
             if existing_registration:
                 existing_email = existing_registration.get("ClientEmail", "Unknown")
                 st.error(f"""
@@ -1295,7 +994,7 @@ if st.session_state.app_state == "auth":
                                         client_data = {
                                             "ClientName": full_name,
                                             "ClientEmail": email,
-                                            "ClientMacAddress": device_id,
+                                            "ClientDeviceId": device_id,
                                             "RegistrationDate": registration_date,
                                             "Plan": base_plan,
                                             "ToolName": "walmart_scraper",
@@ -1347,7 +1046,7 @@ if st.session_state.app_state == "auth":
         
         # Get device ID for validation
         try:
-            device_id = get_mac_address()
+            device_id = get_device_id()
         except Exception as e:
             st.error(f"Device validation failed: {e}")
             st.stop()
@@ -1390,11 +1089,11 @@ if st.session_state.app_state == "auth":
                         st.error("Invalid license key or device mismatch.")
                         # Show additional help for device mismatch
                         if client_data:
-                            registered_mac = client_data.get("ClientMacAddress", "")
-                            if registered_mac and registered_mac != device_id:
+                            registered_device = client_data.get("ClientDeviceId", "")
+                            if registered_device and registered_device != device_id:
                                 st.info(f"""
                                 **Device Mismatch Information:**
-                                - Registered Device: `{registered_mac}`
+                                - Registered Device: `{registered_device}`
                                 - Current Device: `{device_id}`
                                 
                                 This license is tied to a different device. Contact support if you've replaced your hardware.
@@ -1567,7 +1266,7 @@ if st.session_state.app_state == "scraping":
         st.session_state.preview_df = st.empty()
         st.session_state.status_text = st.empty()
         st.session_state.start_time = time.time()
-        mac_address = get_mac_address()
+        device_id = get_device_id()
         avg_time_per_url = 0
 
     if st.session_state.scraping_in_progress:
@@ -1608,7 +1307,7 @@ if st.session_state.app_state == "scraping":
                     st.session_state.local_scraped_count += 1
                     license_key = st.session_state.user_data.get("LicenseKey", "")
                     try:
-                        updated = FirebaseFunctions.update_client_validation(license_key, mac_address, 1)
+                        updated = FirebaseFunctions.update_client_validation(license_key, device_id, 1)
                         if updated:
                             st.session_state.daily_urls_used += 1
                             st.session_state.error_log.append(f"{datetime.datetime.now()}: Quota updated successfully for URL {urls[i]}")
@@ -1670,7 +1369,7 @@ if st.session_state.app_state == "scraping":
                         with st.spinner("Applying pending quota updates..."):
                             success = FirebaseFunctions.retry_pending_quota_updates(
                                 st.session_state.user_data.get("LicenseKey", ""),
-                                get_mac_address(),
+                                get_device_id(),
                                 st.session_state.pending_quota_updates
                             )
                             if success:

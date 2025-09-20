@@ -51,72 +51,222 @@ def get_system_path():
     
     return os.path.join(app_dir, 'device.id')
 
-def create_unique_id():
-    """Create guaranteed unique device ID"""
-    # Multiple entropy sources
+def get_comprehensive_system_info():
+    """Get comprehensive system information for unique fingerprinting"""
+    info = {}
+    
+    try:
+        # Basic system info
+        info['platform'] = platform.platform()
+        info['machine'] = platform.machine()
+        info['processor'] = platform.processor()
+        info['architecture'] = platform.architecture()[0]
+        info['system'] = platform.system()
+        info['release'] = platform.release()
+        info['version'] = platform.version()
+        info['hostname'] = platform.node()
+        
+        # Network interfaces (more reliable than MAC)
+        try:
+            import netifaces
+            interfaces = netifaces.interfaces()
+            info['network_interfaces'] = sorted(interfaces)
+        except ImportError:
+            # Fallback without netifaces
+            try:
+                import socket
+                hostname = socket.gethostname()
+                info['ip_address'] = socket.gethostbyname(hostname)
+            except:
+                info['ip_address'] = 'unknown'
+        
+        # CPU info
+        try:
+            info['cpu_count'] = psutil.cpu_count(logical=False)
+            info['cpu_count_logical'] = psutil.cpu_count(logical=True)
+            if hasattr(psutil, 'cpu_freq'):
+                cpu_freq = psutil.cpu_freq()
+                if cpu_freq:
+                    info['cpu_freq_max'] = cpu_freq.max
+        except:
+            pass
+        
+        # Memory info
+        try:
+            memory = psutil.virtual_memory()
+            info['total_memory'] = memory.total
+        except:
+            pass
+        
+        # Disk info
+        try:
+            disk_usage = psutil.disk_usage('/')
+            info['disk_total'] = disk_usage.total
+        except:
+            try:
+                disk_usage = psutil.disk_usage('C:\\' if platform.system() == 'Windows' else '/')
+                info['disk_total'] = disk_usage.total
+            except:
+                pass
+        
+        # Environment-specific info
+        info['user'] = os.environ.get('USER', os.environ.get('USERNAME', 'unknown'))
+        info['home'] = os.environ.get('HOME', os.environ.get('USERPROFILE', 'unknown'))
+        
+        # Cloud platform detection
+        cloud_indicators = {}
+        
+        # Railway detection
+        if os.environ.get('RAILWAY_ENVIRONMENT'):
+            cloud_indicators['railway'] = True
+            cloud_indicators['railway_service'] = os.environ.get('RAILWAY_SERVICE_NAME', 'unknown')
+            cloud_indicators['railway_project'] = os.environ.get('RAILWAY_PROJECT_NAME', 'unknown')
+            cloud_indicators['railway_env'] = os.environ.get('RAILWAY_ENVIRONMENT', 'unknown')
+        
+        # Heroku detection
+        if os.environ.get('DYNO'):
+            cloud_indicators['heroku'] = True
+            cloud_indicators['dyno'] = os.environ.get('DYNO', 'unknown')
+        
+        # Render detection
+        if os.environ.get('RENDER'):
+            cloud_indicators['render'] = True
+            cloud_indicators['render_service'] = os.environ.get('RENDER_SERVICE_NAME', 'unknown')
+        
+        # Streamlit Cloud detection
+        if os.environ.get('STREAMLIT_CLOUD'):
+            cloud_indicators['streamlit_cloud'] = True
+        
+        info['cloud_platform'] = cloud_indicators
+        
+        # Browser/session specific info (for Streamlit)
+        try:
+            # Get Streamlit session info if available
+            if hasattr(st, 'session_state') and hasattr(st.session_state, '_session_id'):
+                info['streamlit_session'] = st.session_state._session_id
+        except:
+            pass
+        
+        # User agent from headers (if running in web context)
+        try:
+            if 'streamlit' in str(type(st.session_state)):
+                # Try to get browser fingerprint
+                info['user_agent_hash'] = hashlib.md5(
+                    str(st.session_state.get('user_agent', 'unknown')).encode()
+                ).hexdigest()[:8]
+        except:
+            pass
+            
+    except Exception as e:
+        info['error'] = str(e)
+    
+    return info
+
+def create_unique_device_id():
+    """Create a truly unique device ID using comprehensive fingerprinting"""
+    
+    # Get comprehensive system info
+    sys_info = get_comprehensive_system_info()
+    
+    # Create multiple entropy sources
     timestamp = str(time.time_ns())
     uuid1 = str(uuid.uuid4())
     uuid2 = str(uuid.uuid4())
+    random_seed = random.randint(100000, 999999)
+    random.seed(random_seed)
     random_nums = ''.join([str(random.randint(0, 9)) for _ in range(50)])
     
+    # Browser/client specific entropy
     try:
-        hostname = platform.node()
-        system = platform.platform()
+        # Try to get some browser-specific info if running in Streamlit
+        browser_entropy = []
+        
+        # Use Streamlit session state as entropy source
+        if hasattr(st, 'session_state'):
+            session_keys = list(st.session_state.keys())
+            browser_entropy.append(str(hash(tuple(sorted(session_keys)))))
+            
+        # Add current URL parameters if available
+        try:
+            query_params = st.experimental_get_query_params()
+            if query_params:
+                browser_entropy.append(str(hash(tuple(sorted(query_params.items())))))
+        except:
+            pass
+            
+        browser_string = '_'.join(browser_entropy) if browser_entropy else str(random.randint(10000, 99999))
+        
     except:
-        hostname = f"host_{random.randint(10000, 99999)}"
-        system = f"sys_{random.randint(10000, 99999)}"
+        browser_string = str(random.randint(10000, 99999))
     
-    # Combine all entropy
-    entropy = f"{timestamp}_{uuid1}_{uuid2}_{random_nums}_{hostname}_{system}_{id({})}"
+    # Combine all entropy sources
+    entropy_parts = [
+        timestamp,
+        uuid1,
+        uuid2,
+        random_nums,
+        str(sys_info.get('hostname', 'unknown')),
+        str(sys_info.get('platform', 'unknown')),
+        str(sys_info.get('processor', 'unknown')),
+        str(sys_info.get('total_memory', 'unknown')),
+        str(sys_info.get('disk_total', 'unknown')),
+        str(sys_info.get('user', 'unknown')),
+        str(sys_info.get('cloud_platform', {})),
+        browser_string,
+        str(random_seed),
+        str(id(sys_info)),  # Memory address of the info dict
+        str(os.getpid()),  # Process ID
+    ]
+    
+    # Create final entropy string
+    entropy = '_'.join(entropy_parts)
     
     # Create hash
-    device_hash = hashlib.sha256(entropy.encode()).hexdigest()
+    device_hash = hashlib.sha256(entropy.encode('utf-8')).hexdigest()
     
-    # Format as MAC-like
+    # Format as MAC-like address for consistency
     device_id = ':'.join([device_hash[i:i+2].upper() for i in range(0, 12, 2)])
     
-    return device_id
+    return device_id, sys_info
 
 def get_mac_address():
-    """Get unique device MAC address"""
-    # Get the MAC address as a 48-bit integer
-
+    """Get or create unique device identifier with better persistence"""
+    
     device_path = get_system_path()
     
-    # Try to load existing
+    # Try to load existing device ID
     if os.path.exists(device_path):
         try:
             with open(device_path, 'r') as f:
-                existing_id = f.read().strip()
-                if existing_id and len(existing_id) > 10:
-                    return existing_id
-        except:
-            pass
+                content = f.read().strip()
+                if content and len(content) > 10:
+                    # Validate the existing ID format
+                    if re.match(r'^[A-F0-9]{2}(:[A-F0-9]{2}){5}$', content):
+                        return content
+        except Exception as e:
+            if 'error_log' in st.session_state:
+                st.session_state.error_log.append(f"Error reading existing device ID: {e}")
     
-    # Create new ID
-    mac_int = uuid.getnode()
-
-    # Convert the integer to a formatted MAC address string
-    device_id = ':'.join(re.findall('..', '%012x' % mac_int))
+    # Create new device ID
+    device_id, sys_info = create_unique_device_id()
     
-    # Save it
+    # Save the device ID and system info
     try:
         with open(device_path, 'w') as f:
             f.write(device_id)
         
-        # Save backup info
+        # Save detailed backup info
         backup_info = {
             'device_id': device_id,
             'created': datetime.datetime.now().isoformat(),
-            'platform': platform.system(),
-            'hostname': platform.node(),
-            'path': device_path
+            'system_info': sys_info,
+            'path': device_path,
+            'version': '2.0'
         }
         
         backup_path = device_path.replace('.id', '_info.json')
         with open(backup_path, 'w') as f:
-            import json
-            f.write(json.dumps(backup_info, indent=2))
+            json.dump(backup_info, f, indent=2, default=str)
             
     except Exception as e:
         if 'error_log' in st.session_state:
@@ -124,32 +274,74 @@ def get_mac_address():
     
     return device_id
 
+def get_browser_fingerprint():
+    """Get browser-specific fingerprint for additional uniqueness"""
+    try:
+        fingerprint_parts = []
+        
+        # Try to get browser info through Streamlit
+        if hasattr(st, 'session_state'):
+            # Session state fingerprint
+            session_hash = hash(str(sorted(st.session_state.keys())))
+            fingerprint_parts.append(str(session_hash))
+        
+        # Time-based component (but stable within session)
+        session_time = str(int(time.time() / 3600))  # Changes every hour
+        fingerprint_parts.append(session_time)
+        
+        # Random but persistent component
+        if 'browser_fingerprint_seed' not in st.session_state:
+            st.session_state.browser_fingerprint_seed = str(uuid.uuid4())
+        fingerprint_parts.append(st.session_state.browser_fingerprint_seed)
+        
+        # Create fingerprint
+        fingerprint = hashlib.md5('_'.join(fingerprint_parts).encode()).hexdigest()[:12]
+        return fingerprint.upper()
+        
+    except Exception:
+        # Fallback to random but session-persistent ID
+        if 'fallback_browser_id' not in st.session_state:
+            st.session_state.fallback_browser_id = str(uuid.uuid4())[:12].upper()
+        return st.session_state.fallback_browser_id
+
 # Test function
 def test_device_uniqueness():
-    """Test device ID generation"""
+    """Test device ID generation and show detailed info"""
     st.write("**Device Test Results:**")
     
     # Current device info
     current_id = get_mac_address()
     device_path = get_system_path()
+    sys_info = get_comprehensive_system_info()
+    browser_fp = get_browser_fingerprint()
     
-    st.write(f"- Device ID: `{current_id}`")
-    st.write(f"- Platform: {platform.system()}")
-    st.write(f"- Hostname: {platform.node()}")
-    st.write(f"- File Path: `{device_path}`")
-    st.write(f"- File Exists: {'✅' if os.path.exists(device_path) else '❌'}")
+    st.write(f"- **Device ID:** `{current_id}`")
+    st.write(f"- **Browser Fingerprint:** `{browser_fp}`")
+    st.write(f"- **Platform:** {sys_info.get('platform', 'Unknown')}")
+    st.write(f"- **Hostname:** {sys_info.get('hostname', 'Unknown')}")
+    st.write(f"- **File Path:** `{device_path}`")
+    st.write(f"- **File Exists:** {'✅' if os.path.exists(device_path) else '❌'}")
+    
+    # Cloud platform info
+    cloud_info = sys_info.get('cloud_platform', {})
+    if cloud_info:
+        st.write(f"- **Cloud Platform:** {cloud_info}")
     
     # Test multiple generations
     st.write("\n**Uniqueness Test:**")
     test_ids = []
-    for i in range(3):
-        test_id = create_unique_id()
+    for i in range(5):
+        test_id, _ = create_unique_device_id()
         test_ids.append(test_id)
         st.write(f"- Test ID {i+1}: `{test_id}`")
-        time.sleep(0.001)
+        time.sleep(0.01)  # Small delay for timestamp variation
     
     unique_count = len(set(test_ids))
     st.write(f"- Generated {len(test_ids)} IDs, {unique_count} unique ({'✅' if unique_count == len(test_ids) else '❌'})")
+    
+    # System entropy test
+    st.write("\n**System Information:**")
+    st.json(sys_info)
     
     return current_id
 
@@ -164,13 +356,19 @@ def force_new_device_id():
             if os.path.exists(path):
                 os.remove(path)
         
+        # Clear session state browser fingerprint
+        if 'browser_fingerprint_seed' in st.session_state:
+            del st.session_state.browser_fingerprint_seed
+        if 'fallback_browser_id' in st.session_state:
+            del st.session_state.fallback_browser_id
+        
         # Create new ID
         new_id = get_mac_address()
-        st.success(f"New Device ID: `{new_id}`")
+        st.success(f"New Device ID Created: `{new_id}`")
         return new_id
         
     except Exception as e:
-        st.error(f"Error: {e}")
+        st.error(f"Error creating new device ID: {e}")
         return None
 
 # -------------------------------
@@ -1013,6 +1211,23 @@ if st.session_state.app_state == "auth":
     st.title("Walmart Product Scraper")
     st.markdown("**Professional-grade data extraction for market research and competitive analysis.**")
     
+    # Add device testing section for debugging
+    with st.expander("Device ID Testing (For Debugging)", expanded=False):
+        st.info("Use this section to test and debug device ID generation")
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            if st.button("Test Device Uniqueness"):
+                test_device_uniqueness()
+        with col2:
+            if st.button("Force New Device ID"):
+                force_new_device_id()
+        with col3:
+            if st.button("Show Current Device ID"):
+                current_id = get_mac_address()
+                st.code(current_id)
+                st.write(f"Device ID: `{current_id}`")
+    
     tab1, tab2 = st.tabs(["New Registration", "Existing User"])
     
     with tab1:
@@ -1057,7 +1272,7 @@ if st.session_state.app_state == "auth":
                         registration_date = datetime.datetime.now().strftime("%Y-%m-%d")
                         st.text_input("Registration Date", value=registration_date, disabled=True)
                     
-                    agree_terms = st.checkbox("I agree to the [Terms of Service](https://example.com/terms) and [Privacy Policy](https://example.com/privacy)")
+                    agree_terms = st.checkbox("I agree to the Terms of Service and Privacy Policy")
                     dont_ask = st.checkbox("Don't ask again on this device", value=True)
                     
                     submitted = st.form_submit_button("Create Account")
@@ -1335,7 +1550,7 @@ if st.session_state.app_state == "scraping":
                     st.session_state.error_log.append(f"{datetime.datetime.now()}: Error processing URLs: {e}")
 
     if urls:
-        st.write(f"URLs to scrape:", urls)
+        st.write(f"URLs to scrape: {len(urls)} URLs")
 
     # Scraping Button with Live Preview
     if st.button("Start Scraping", disabled=not urls) and not st.session_state.scraping_in_progress:
@@ -1464,31 +1679,8 @@ if st.session_state.app_state == "scraping":
                                 st.session_state.pending_quota_updates = []
                             else:
                                 st.session_state.error_log.append(f"{datetime.datetime.now()}: Failed to apply {len(st.session_state.pending_quota_updates)} pending quota updates")
-                    license_key = st.session_state.user_data.get("LicenseKey", "")
-                    client_data = None
-                    retry_delay = 1
-                    max_db_retries = 7
-                    db_retry_count = 0
-                    while client_data is None and db_retry_count < max_db_retries:
-                        try:
-                            client_data = FirebaseFunctions.get_client_data_by_license_key(license_key)
-                            if client_data:
-                                st.session_state.daily_urls_used = client_data.get("DailyUrlCount", st.session_state.daily_urls_used)
-                                st.session_state.error_log.append(f"{datetime.datetime.now()}: Final quota refetched successfully: {st.session_state.daily_urls_used}")
-                            else:
-                                raise ValueError("No client data found")
-                        except Exception as e:
-                            db_retry_count += 1
-                            st.session_state.error_log.append(f"{datetime.datetime.now()}: Final quota fetch attempt {db_retry_count}: {str(e)}")
-                            if db_retry_count < max_db_retries:
-                                time.sleep(retry_delay)
-                                retry_delay = min(retry_delay * 2, 20)
-                            else:
-                                st.session_state.error_log.append(f"{datetime.datetime.now()}: Failed to fetch final quota after {max_db_retries} retries: {str(e)}")
-                    st.success(f"Scraping completed! Success: {st.session_state.scraped_count}, Errors: {st.session_state.error_count}, URLs Used: {st.session_state.daily_urls_used}, Local Scraped: {st.session_state.local_scraped_count}")
-                    if st.session_state.error_log:
-                        with st.expander("Debug: Error Log", expanded=False):
-                            st.write(st.session_state.error_log)
+                    
+                    st.success(f"Scraping completed! Success: {st.session_state.scraped_count}, Errors: {st.session_state.error_count}")
                 except Exception as e:
                     st.session_state.error_log.append(f"{datetime.datetime.now()}: Finalization error: {str(e)}")
             else:
@@ -1537,10 +1729,16 @@ if st.session_state.app_state == "scraping":
         except Exception as e:
             st.session_state.error_log.append(f"{datetime.datetime.now()}: Data display error: {str(e)}")
 
+    # Debug Error Log
+    if st.session_state.error_log:
+        with st.expander("Debug: Error Log", expanded=False):
+            for log_entry in st.session_state.error_log[-20:]:  # Show last 20 entries
+                st.text(log_entry)
+
     # Tutorial and Footer
     st.markdown("---")
     st.subheader("Tutorial Video")
-    st.video("https://www.youtube.com/watch?v=dQw4w9WgXcQ", format="video/mp4")
+    st.video("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
     st.markdown("---")
     st.markdown("""
     <div style="text-align: center; font-size: 14px; padding: 20px 0;">

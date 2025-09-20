@@ -38,11 +38,10 @@ def get_device_id():
     if 'device_id' not in st.session_state:
         device_id = create_device_fingerprint()
         st.session_state.device_id = device_id
-        query_params = st.experimental_get_query_params()
-        if 'device_id' in query_params and query_params['device_id'][0]:
-            st.session_state.device_id = query_params['device_id'][0]
+        if 'device_id' in st.query_params and st.query_params['device_id']:
+            st.session_state.device_id = st.query_params['device_id']
         else:
-            st.experimental_set_query_params(device_id=device_id)
+            st.query_params['device_id'] = device_id
         if 'error_log' in st.session_state:
             st.session_state.error_log.append(f"{datetime.datetime.now()}: Generated stable device ID: {device_id}")
     return st.session_state.device_id
@@ -51,7 +50,7 @@ def clear_device_id():
     """Clear on logout"""
     if 'device_id' in st.session_state:
         del st.session_state.device_id
-    st.experimental_set_query_params()
+    st.query_params.clear()
     if 'error_log' in st.session_state:
         st.session_state.error_log.append(f"{datetime.datetime.now()}: Cleared device ID")
 
@@ -343,15 +342,38 @@ if "pending_quota_updates" not in st.session_state:
 if "rate_limit_delay" not in st.session_state:
     st.session_state.rate_limit_delay = 0.5
 
-# Auto-login
+# Auto-login with device ID
 if st.session_state.app_state == "auth" and st.session_state.user_data is None:
+    device_id = get_device_id()
+    client_data = FirebaseFunctions.get_registration_by_device_id(device_id)
+    if client_data:
+        with st.spinner("Auto-validating device..."):
+            is_eligible, client_data = check_license_eligibility(client_data.get("LicenseKey", ""), "walmart_scraper", device_id)
+            if is_eligible:
+                st.session_state.user_data = client_data
+                st.session_state.license_valid = True
+                st.session_state.app_state = "scraping"
+                st.session_state.firecrawl_api_key = client_data.get("FirecrawlApiKey", "")
+                plan = client_data.get("Plan", "Free").lower()
+                if any(word in plan for word in ["basic", "premium", "enterprise"]):
+                    st.session_state.user_tier = "premium"
+                else:
+                    st.session_state.user_tier = "free"
+                st.session_state.daily_urls_used = client_data.get("DailyUrlCount", 0)
+                st.session_state.local_scraped_count = 0
+                st.session_state.pending_quota_updates = []
+                if should_reset_daily_count(client_data):
+                    FirebaseFunctions.reset_daily_url_count(client_data.get("LicenseKey", ""))
+                    st.session_state.daily_urls_used = 0
+                    st.session_state.local_scraped_count = 0
+                st.rerun()
+    # Fallback to saved license file if no Firebase match
     if os.path.exists(LOCAL_LICENSE_FILE) and not is_cloud():
         with open(LOCAL_LICENSE_FILE, "r") as f:
             saved_key = f.read().strip()
         if saved_key:
             with st.spinner("Auto-validating saved license..."):
                 try:
-                    device_id = get_device_id()
                     is_eligible, client_data = check_license_eligibility(saved_key, "walmart_scraper", device_id)
                     if is_eligible:
                         st.session_state.user_data = client_data
@@ -372,10 +394,8 @@ if st.session_state.app_state == "auth" and st.session_state.user_data is None:
                             st.session_state.local_scraped_count = 0
                         st.rerun()
                     else:
-                        st.warning("Saved license key is invalid or tied to a different device. Please re-enter.")
                         os.remove(LOCAL_LICENSE_FILE)
                 except Exception as e:
-                    st.warning(f"Auto-login failed: {e}")
                     st.session_state.error_log.append(f"{datetime.datetime.now()}: Auto-login error: {e}")
 
 # CSS
@@ -766,108 +786,82 @@ if st.session_state.app_state == "auth":
     st.title("Walmart Product Scraper")
     st.markdown("**Professional-grade data extraction for market research and competitive analysis.**")
     
-    with st.expander("Device ID Debug Info", expanded=False):
-        device_id = get_device_id()
-        st.write(f"**Device ID:** `{device_id}`")
-        st.write(f"**Environment:** {'Cloud (Railway)' if is_cloud() else 'Local'}")
-        if st.session_state.error_log:
-            st.write("**Recent Errors:**")
-            for log in st.session_state.error_log[-5:]:
-                st.write(log)
-    
     tab1, tab2 = st.tabs(["New Registration", "Existing User"])
     
     with tab1:
         st.subheader("Create Your Account")
-        try:
-            device_id = get_device_id()
-            existing_registration = FirebaseFunctions.get_registration_by_device_id(device_id)
-            if existing_registration:
-                existing_email = existing_registration.get("ClientEmail", "Unknown")
-                st.error(f"""
-                Device Already Registered
-                
-                This device is already registered with email: **{existing_email}**
-                
-                Please use the "Existing User" tab to login with your license key.
-                
-                If you believe this is an error, contact support.
-                """)
-            else:
-                with st.form("registration_form"):
-                    col1, col2 = st.columns([3, 2])
-                    with col1:
-                        full_name = st.text_input("Full Name", placeholder="John Doe")
-                        email = st.text_input("Email Address", placeholder="john@example.com")
-                        firecrawl_api_key = st.text_input("Firecrawl API Key", placeholder="fc-...", type="password")
-                        selected_plan = st.selectbox("Select Plan", [
-                            "Free Plan - 50 URLs/Day (7 Days)",
-                            "Basic Plan - 500 URLs/Day (1 Month)",
-                            "Premium Plan - 2,500 URLs/Day (3 Months)",
-                            "Enterprise Plan - 5,000 URLs/Day (1 Year)"
-                        ], help="Choose your subscription plan")
-                        base_plan = selected_plan.split(" - ")[0].replace(" Plan", "")
-                    with col2:
-                        st.text_input("Device ID", value=device_id, disabled=True, 
-                                     help="Unique identifier for this device")
-                        registration_date = datetime.datetime.now().strftime("%Y-%m-%d")
-                        st.text_input("Registration Date", value=registration_date, disabled=True)
-                    agree_terms = st.checkbox("I agree to the Terms of Service and Privacy Policy")
-                    dont_ask = st.checkbox("Don't ask again on this device", value=True)
-                    submitted = st.form_submit_button("Create Account")
-                    if submitted:
-                        with st.spinner("Creating account and validating device..."):
-                            if not all([full_name, email, firecrawl_api_key]):
-                                st.error("Please fill in all required fields including Firecrawl API Key.")
-                            elif not agree_terms:
-                                st.error("You must agree to the Terms of Service.")
-                            else:
-                                is_valid, message = validate_new_registration(email, device_id)
-                                if not is_valid:
-                                    st.error(f"{message}")
+        device_id = get_device_id()
+        with st.form("registration_form"):
+            col1, col2 = st.columns([3, 2])
+            with col1:
+                full_name = st.text_input("Full Name", placeholder="John Doe")
+                email = st.text_input("Email Address", placeholder="john@example.com")
+                firecrawl_api_key = st.text_input("Firecrawl API Key", placeholder="fc-...", type="password")
+                selected_plan = st.selectbox("Select Plan", [
+                    "Free Plan - 50 URLs/Day (7 Days)",
+                    "Basic Plan - 500 URLs/Day (1 Month)",
+                    "Premium Plan - 2,500 URLs/Day (3 Months)",
+                    "Enterprise Plan - 5,000 URLs/Day (1 Year)"
+                ], help="Choose your subscription plan")
+                base_plan = selected_plan.split(" - ")[0].replace(" Plan", "")
+            with col2:
+                st.text_input("Device ID", value=device_id, disabled=True, 
+                             help="Unique identifier for this device")
+                registration_date = datetime.datetime.now().strftime("%Y-%m-%d")
+                st.text_input("Registration Date", value=registration_date, disabled=True)
+            agree_terms = st.checkbox("I agree to the Terms of Service and Privacy Policy")
+            dont_ask = st.checkbox("Don't ask again on this device", value=True)
+            submitted = st.form_submit_button("Create Account")
+            if submitted:
+                with st.spinner("Creating account and validating device..."):
+                    if not all([full_name, email, firecrawl_api_key]):
+                        st.error("Please fill in all required fields including Firecrawl API Key.")
+                    elif not agree_terms:
+                        st.error("You must agree to the Terms of Service.")
+                    else:
+                        is_valid, message = validate_new_registration(email, device_id)
+                        if not is_valid:
+                            st.error(f"{message}")
+                        else:
+                            try:
+                                client_data = {
+                                    "ClientName": full_name,
+                                    "ClientEmail": email,
+                                    "ClientDeviceId": device_id,
+                                    "RegistrationDate": registration_date,
+                                    "Plan": base_plan,
+                                    "ToolName": "walmart_scraper",
+                                    "AccessStatus": "ON",
+                                    "DailyUrlCount": 0,
+                                    "FirecrawlApiKey": firecrawl_api_key
+                                }
+                                license_key, doc_id = FirebaseFunctions.add_new_client(client_data)
+                                if license_key:
+                                    client_data["LicenseKey"] = license_key
+                                    client_data["id"] = doc_id
+                                    st.session_state.user_data = client_data
+                                    st.session_state.license_valid = True
+                                    st.session_state.app_state = "scraping"
+                                    st.session_state.firecrawl_api_key = firecrawl_api_key
+                                    if dont_ask and not is_cloud():
+                                        with open(LOCAL_LICENSE_FILE, "w") as f:
+                                            f.write(license_key)
+                                    st.success(f"""
+                                    Account Created Successfully!
+                                    
+                                    **Plan:** {selected_plan}  
+                                    **License Key:** `{license_key}`  
+                                    **Device:** {device_id}
+                                    
+                                    Important: Save your license key securely. This device is now linked to your account.
+                                    """)
+                                    st.session_state.error_log.append(f"{datetime.datetime.now()}: New account registered - Email: {email}, Device: {device_id}, Plan: {base_plan}")
+                                    st.rerun()
                                 else:
-                                    try:
-                                        client_data = {
-                                            "ClientName": full_name,
-                                            "ClientEmail": email,
-                                            "ClientDeviceId": device_id,
-                                            "RegistrationDate": registration_date,
-                                            "Plan": base_plan,
-                                            "ToolName": "walmart_scraper",
-                                            "AccessStatus": "ON",
-                                            "DailyUrlCount": 0,
-                                            "FirecrawlApiKey": firecrawl_api_key
-                                        }
-                                        license_key, doc_id = FirebaseFunctions.add_new_client(client_data)
-                                        if license_key:
-                                            client_data["LicenseKey"] = license_key
-                                            client_data["id"] = doc_id
-                                            st.session_state.user_data = client_data
-                                            st.session_state.license_valid = True
-                                            st.session_state.app_state = "scraping"
-                                            st.session_state.firecrawl_api_key = firecrawl_api_key
-                                            if dont_ask and not is_cloud():
-                                                with open(LOCAL_LICENSE_FILE, "w") as f:
-                                                    f.write(license_key)
-                                            st.success(f"""
-                                            Account Created Successfully!
-                                            
-                                            **Plan:** {selected_plan}  
-                                            **License Key:** `{license_key}`  
-                                            **Device:** {device_id}
-                                            
-                                            Important: Save your license key securely. This device is now linked to your account.
-                                            """)
-                                            st.session_state.error_log.append(f"{datetime.datetime.now()}: New account registered - Email: {email}, Device: {device_id}, Plan: {base_plan}")
-                                            st.rerun()
-                                        else:
-                                            st.error("Failed to create account. Please try again or contact support.")
-                                    except Exception as e:
-                                        st.error(f"Account creation failed: {e}")
-                                        st.session_state.error_log.append(f"{datetime.datetime.now()}: Account creation error: {e}")
-        except Exception as e:
-            st.error(f"Device validation failed: {e}")
-            st.session_state.error_log.append(f"{datetime.datetime.now()}: Device validation error: {e}")
+                                    st.error("Failed to create account. Please try again or contact support.")
+                            except Exception as e:
+                                st.error(f"Account creation failed: {e}")
+                                st.session_state.error_log.append(f"{datetime.datetime.now()}: Account creation error: {e}")
     
     with tab2:
         st.subheader("Login to Your Account")
@@ -1198,3 +1192,17 @@ if st.session_state.app_state == "scraping":
         with st.expander("Error Log", expanded=False):
             for log in st.session_state.error_log[-10:]:
                 st.write(log)
+                
+    # Tutorial and Footer
+    st.markdown("---")
+    st.subheader("Tutorial Video")
+    st.video("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+    st.markdown("---")
+    st.markdown("""
+    <div style="text-align: center; font-size: 14px; padding: 20px 0;">
+        <strong>Umisoft Walmart Scraper</strong><br>
+        Empower your business with real-time product insights.<br>
+        Premium features include unlimited scraping and dedicated support.<br>
+        Contact: <a href="mailto:support@umisoft.com" style="text-decoration: none;">support@umisoft.com</a> | © 2025 Umisoft Ltd. | Version 2.0
+    </div>
+    """, unsafe_allow_html=True)

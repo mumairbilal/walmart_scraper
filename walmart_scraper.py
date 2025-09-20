@@ -13,8 +13,6 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 import json
 import hashlib
-import platform
-import tempfile
 
 PLAN_LIMITS = {
     "Free": {"daily_limit": 50, "valid_days": 7},
@@ -24,90 +22,38 @@ PLAN_LIMITS = {
 }
 
 LOCAL_LICENSE_FILE = ".walmart_scraper_license"
-DEVICE_ID_FILE = ".device_id"
-
-def get_system_path():
-    """Get system-specific path for device ID file"""
-    system = platform.system().lower()
-    if system == "windows":
-        base = os.environ.get('LOCALAPPDATA', tempfile.gettempdir())
-    elif system == "darwin":
-        base = os.path.expanduser('~/Library/Application Support')
-    else:
-        base = os.environ.get('XDG_CONFIG_HOME', os.path.expanduser('~/.config'))
-    app_dir = os.path.join(base, 'walmart_scraper')
-    try:
-        os.makedirs(app_dir, exist_ok=True)
-    except Exception as e:
-        if 'error_log' in st.session_state:
-            st.session_state.error_log.append(f"{datetime.datetime.now()}: Error creating app dir {app_dir}: {e}")
-        app_dir = tempfile.gettempdir()
-    return os.path.join(app_dir, DEVICE_ID_FILE)
 
 def is_cloud():
     """Detect Railway"""
     return os.environ.get('RAILWAY_ENVIRONMENT') is not None
 
-def create_unique_device_id():
-    """Generate unique ID"""
-    device_hash = hashlib.sha256(str(uuid.uuid4()).encode()).hexdigest()
+def create_device_fingerprint():
+    """Client-side fingerprint for unique device ID"""
+    seed = str(uuid.uuid4()) + str(time.time_ns())
+    device_hash = hashlib.sha256(seed.encode()).hexdigest()
     return ':'.join([device_hash[i:i+2].upper() for i in range(0, 12, 2)])
 
 def get_device_id():
-    """Get persistent device ID, reuse if registered in Firebase"""
-    try:
-        # Check Firebase for registered device ID
-        FirebaseFunctions.initialize_firebase()
-        clients_ref = FirebaseFunctions._firestore_db.collection("licenses")
-        query = clients_ref.where("ClientDeviceId", "!=", None)
-        docs = query.stream()
-        for doc in docs:
-            data = doc.to_dict()
-            if data.get("ClientDeviceId"):
-                if 'error_log' in st.session_state:
-                    st.session_state.error_log.append(f"{datetime.datetime.now()}: Reusing registered device ID from Firebase: {data['ClientDeviceId']}")
-                return data["ClientDeviceId"]
-    except Exception as e:
+    """Get stable device ID per browser/device, persists via session_state and query params"""
+    if 'device_id' not in st.session_state:
+        device_id = create_device_fingerprint()
+        st.session_state.device_id = device_id
+        query_params = st.experimental_get_query_params()
+        if 'device_id' in query_params and query_params['device_id'][0]:
+            st.session_state.device_id = query_params['device_id'][0]
+        else:
+            st.experimental_set_query_params(device_id=device_id)
         if 'error_log' in st.session_state:
-            st.session_state.error_log.append(f"{datetime.datetime.now()}: Firebase device ID check error: {e}")
-
-    # No registered ID in Firebase, check file
-    device_path = get_system_path()
-    if os.path.exists(device_path):
-        try:
-            with open(device_path, 'r') as f:
-                content = f.read().strip()
-                if re.match(r'^[A-F0-9]{2}(:[A-F0-9]{2}){5}$', content):
-                    if 'error_log' in st.session_state:
-                        st.session_state.error_log.append(f"{datetime.datetime.now()}: Reusing device ID from file {device_path}: {content}")
-                    return content
-        except Exception as e:
-            if 'error_log' in st.session_state:
-                st.session_state.error_log.append(f"{datetime.datetime.now()}: Error reading device file {device_path}: {e}")
-
-    # Generate new ID and save
-    device_id = create_unique_device_id()
-    try:
-        with open(device_path, 'w') as f:
-            f.write(device_id)
-        if 'error_log' in st.session_state:
-            st.session_state.error_log.append(f"{datetime.datetime.now()}: Generated and saved new device ID to {device_path}: {device_id}")
-    except Exception as e:
-        if 'error_log' in st.session_state:
-            st.session_state.error_log.append(f"{datetime.datetime.now()}: Failed to save device file {device_path}: {e}")
-    return device_id
+            st.session_state.error_log.append(f"{datetime.datetime.now()}: Generated stable device ID: {device_id}")
+    return st.session_state.device_id
 
 def clear_device_id():
-    """Clear device ID on logout"""
-    device_path = get_system_path()
-    if os.path.exists(device_path):
-        try:
-            os.remove(device_path)
-            if 'error_log' in st.session_state:
-                st.session_state.error_log.append(f"{datetime.datetime.now()}: Cleared device file {device_path}")
-        except Exception as e:
-            if 'error_log' in st.session_state:
-                st.session_state.error_log.append(f"{datetime.datetime.now()}: Error clearing device file {device_path}: {e}")
+    """Clear on logout"""
+    if 'device_id' in st.session_state:
+        del st.session_state.device_id
+    st.experimental_set_query_params()
+    if 'error_log' in st.session_state:
+        st.session_state.error_log.append(f"{datetime.datetime.now()}: Cleared device ID")
 
 class FirebaseFunctions:
     _firestore_db = None
@@ -824,8 +770,6 @@ if st.session_state.app_state == "auth":
         device_id = get_device_id()
         st.write(f"**Device ID:** `{device_id}`")
         st.write(f"**Environment:** {'Cloud (Railway)' if is_cloud() else 'Local'}")
-        if not is_cloud():
-            st.write(f"**Device File Path:** `{get_system_path()}`")
         if st.session_state.error_log:
             st.write("**Recent Errors:**")
             for log in st.session_state.error_log[-5:]:

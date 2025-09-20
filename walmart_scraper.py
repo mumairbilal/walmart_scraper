@@ -31,310 +31,151 @@ PLAN_LIMITS = {
 LOCAL_LICENSE_FILE = ".walmart_scraper_license"
 DEVICE_ID_FILE = ".device_fingerprint"
 
-def get_system_unique_path():
-    """Get a system-specific path that won't be synced between devices"""
+import uuid
+import os
+import datetime
+import hashlib
+import time
+import random
+import platform
+import tempfile
+import streamlit as st
+
+def get_system_path():
+    """Get system-specific path for device ID"""
     system = platform.system().lower()
     
     if system == "windows":
-        # Use Windows temp directory or user profile
-        base_path = os.environ.get('LOCALAPPDATA', os.environ.get('TEMP', tempfile.gettempdir()))
-    elif system == "darwin":  # macOS
-        # Use user's Library folder
-        base_path = os.path.expanduser('~/Library/Application Support')
-    else:  # Linux and others
-        # Use user's config directory
-        base_path = os.environ.get('XDG_CONFIG_HOME', os.path.expanduser('~/.config'))
+        base = os.environ.get('LOCALAPPDATA', tempfile.gettempdir())
+    elif system == "darwin":
+        base = os.path.expanduser('~/Library/Application Support')
+    else:
+        base = os.environ.get('XDG_CONFIG_HOME', os.path.expanduser('~/.config'))
     
-    # Create app-specific directory
-    app_dir = os.path.join(base_path, 'walmart_scraper')
+    app_dir = os.path.join(base, 'walmart_scraper')
     try:
         os.makedirs(app_dir, exist_ok=True)
     except:
-        # Fallback to temp directory
         app_dir = tempfile.gettempdir()
     
-    return os.path.join(app_dir, 'device_id.txt')
+    return os.path.join(app_dir, 'device.id')
 
-def create_truly_unique_device_id():
-    """Create a guaranteed unique device ID using multiple entropy sources"""
-    
-    # Get current timestamp with nanosecond precision
+def create_unique_id():
+    """Create guaranteed unique device ID"""
+    # Multiple entropy sources
     timestamp = str(time.time_ns())
+    uuid1 = str(uuid.uuid4())
+    uuid2 = str(uuid.uuid4())
+    random_nums = ''.join([str(random.randint(0, 9)) for _ in range(50)])
     
-    # Generate multiple random UUIDs
-    random_uuids = [str(uuid.uuid4()) for _ in range(3)]
-    
-    # Get massive random data
-    random_data = ''.join([str(random.randint(0, 9)) for _ in range(100)])
-    
-    # Get system info
     try:
-        import socket
-        hostname = socket.gethostname()
-        fqdn = socket.getfqdn()
-        system_info = f"{hostname}_{fqdn}_{platform.node()}_{platform.platform()}_{os.getcwd()}"
+        hostname = platform.node()
+        system = platform.platform()
     except:
-        system_info = f"unknown_{platform.system()}_{random.randint(100000, 999999)}"
+        hostname = f"host_{random.randint(10000, 99999)}"
+        system = f"sys_{random.randint(10000, 99999)}"
     
-    # Get process and thread info
-    try:
-        process_info = f"{os.getpid()}_{datetime.datetime.now().microsecond}_{time.perf_counter()}"
-    except:
-        process_info = f"unknown_{random.randint(100000, 999999)}"
+    # Combine all entropy
+    entropy = f"{timestamp}_{uuid1}_{uuid2}_{random_nums}_{hostname}_{system}_{id({})}"
     
-    # Add memory address of a new object (different every time)
-    memory_info = str(id({}))
+    # Create hash
+    device_hash = hashlib.sha256(entropy.encode()).hexdigest()
     
-    # Combine all entropy sources
-    entropy_string = f"{timestamp}_{'-'.join(random_uuids)}_{random_data}_{system_info}_{process_info}_{memory_info}"
-    
-    # Create hash of the entropy
-    device_hash = hashlib.sha256(entropy_string.encode()).hexdigest()
-    
-    # Format as MAC-like address
-    mac_like_id = ':'.join([device_hash[i:i+2].upper() for i in range(0, 12, 2)])
-    
-    return mac_like_id, device_hash, entropy_string
-
-def get_or_create_device_id():
-    """Get existing device ID or create a new unique one"""
-    
-    # Get system-specific path (not synced between devices)
-    device_id_path = get_system_unique_path()
-    
-    print(f"Using device ID path: {device_id_path}")  # Debug print
-    
-    # Check if device ID file exists
-    if os.path.exists(device_id_path):
-        try:
-            with open(device_id_path, 'r') as f:
-                saved_data = f.read().strip()
-                if saved_data and len(saved_data) > 10:
-                    print(f"Found existing device ID: {saved_data}")  # Debug print
-                    return saved_data
-        except Exception as e:
-            print(f"Error reading device ID file: {e}")  # Debug print
-            if 'error_log' in st.session_state:
-                st.session_state.error_log.append(f"Error reading device ID file: {e}")
-    
-    # Create new unique device ID
-    device_id, full_hash, entropy = create_truly_unique_device_id()
-    print(f"Creating new device ID: {device_id}")  # Debug print
-    
-    # Save to file
-    try:
-        # Create backup data with timestamp
-        backup_data = {
-            'device_id': device_id,
-            'full_hash': full_hash,
-            'entropy_sample': entropy[:100],  # First 100 chars of entropy
-            'created_at': datetime.datetime.now().isoformat(),
-            'platform': platform.system(),
-            'hostname': platform.node(),
-            'creation_timestamp': time.time_ns(),
-            'file_path': device_id_path
-        }
-        
-        # Save primary ID
-        with open(device_id_path, 'w') as f:
-            f.write(device_id)
-        
-        # Save backup data
-        backup_path = device_id_path.replace('.txt', '_backup.json')
-        with open(backup_path, 'w') as f:
-            import json
-            f.write(json.dumps(backup_data, indent=2))
-        
-        print(f"Saved device ID to: {device_id_path}")  # Debug print
-        
-        if 'error_log' in st.session_state:
-            st.session_state.error_log.append(f"Created new device ID: {device_id} at {device_id_path}")
-            
-    except Exception as e:
-        print(f"Error saving device ID: {e}")  # Debug print
-        if 'error_log' in st.session_state:
-            st.session_state.error_log.append(f"Error saving device ID: {e}")
-        st.warning(f"Could not save device ID to file: {e}")
+    # Format as MAC-like
+    device_id = ':'.join([device_hash[i:i+2].upper() for i in range(0, 12, 2)])
     
     return device_id
 
 def get_mac_address():
-    """Main function to get unique device identifier"""
-    return get_or_create_device_id()
-
-def verify_device_uniqueness():
-    """Function to verify device ID is truly unique (for testing)"""
-    device_id = get_mac_address()
-    device_id_path = get_system_unique_path()
+    """Get unique device MAC address"""
+    device_path = get_system_path()
     
-    # Show current device info
-    st.write("**Current Device Information:**")
-    st.write(f"- Device ID: `{device_id}`")
-    st.write(f"- Platform: {platform.system()}")
-    st.write(f"- Node: {platform.node()}")
-    st.write(f"- Hostname: {platform.node()}")
-    st.write(f"- Current Time: {datetime.datetime.now()}")
-    st.write(f"- Device ID File Path: `{device_id_path}`")
-    
-    # Show file status
-    if os.path.exists(device_id_path):
-        st.write(f"- Device ID File Exists: ✅")
+    # Try to load existing
+    if os.path.exists(device_path):
         try:
-            file_stat = os.stat(device_id_path)
-            st.write(f"- File Created: {datetime.datetime.fromtimestamp(file_stat.st_ctime)}")
-            st.write(f"- File Size: {file_stat.st_size} bytes")
-            
-            # Show file contents
-            with open(device_id_path, 'r') as f:
-                file_content = f.read().strip()
-                st.write(f"- File Content: `{file_content}`")
-        except Exception as e:
-            st.write(f"- File Error: {e}")
-    else:
-        st.write(f"- Device ID File Exists: ❌")
-    
-    # Test creating another ID (should be different)
-    st.write("\n**Testing Uniqueness:**")
-    test_id1, _, _ = create_truly_unique_device_id()
-    time.sleep(0.001)  # Small delay
-    test_id2, _, _ = create_truly_unique_device_id()
-    st.write(f"- Test ID 1: `{test_id1}`")
-    st.write(f"- Test ID 2: `{test_id2}`")
-    st.write(f"- IDs are different: {'✅' if test_id1 != test_id2 else '❌'}")
-    
-    # Show system info
-    st.write("\n**System Information:**")
-    st.write(f"- Working Directory: `{os.getcwd()}`")
-    st.write(f"- Temp Directory: `{tempfile.gettempdir()}`")
-    try:
-        import socket
-        st.write(f"- Full Hostname: `{socket.getfqdn()}`")
-    except:
-        pass
-    
-    return device_id
-
-def force_create_new_device_id():
-    """Force create a new device ID (removes existing file)"""
-    device_id_path = get_system_unique_path()
-    backup_path = device_id_path.replace('.txt', '_backup.json')
-    
-    try:
-        if os.path.exists(device_id_path):
-            os.remove(device_id_path)
-            st.write(f"Removed existing device ID file: {device_id_path}")
-        
-        if os.path.exists(backup_path):
-            os.remove(backup_path)
-            st.write(f"Removed backup file: {backup_path}")
-        
-        new_id = get_or_create_device_id()
-        st.success(f"Created new device ID: {new_id}")
-        st.write(f"Saved to: {device_id_path}")
-        return new_id
-    except Exception as e:
-        st.error(f"Error creating new device ID: {e}")
-        return None
-
-# Simple test
-if __name__ == "__main__":
-    print("Testing device ID generation...")
-    print(f"System: {platform.system()}")
-    print(f"Device ID path: {get_system_unique_path()}")
-    
-    # Test multiple generations - FIX: unpack 3 values
-    ids = []
-    for i in range(5):
-        device_id, full_hash, entropy = create_truly_unique_device_id()  # Fixed: 3 values
-        ids.append(device_id)
-        print(f"ID {i+1}: {device_id}")
-        time.sleep(0.001)  # Small delay to ensure different timestamps
-    
-    # Check uniqueness
-    unique_ids = set(ids)
-    print(f"\nGenerated {len(ids)} IDs, {len(unique_ids)} unique")
-    print(f"All unique: {'YES' if len(ids) == len(unique_ids) else 'NO'}")
-    
-    # Test persistent ID
-    persistent_id = get_or_create_device_id()
-    print(f"\nPersistent ID: {persistent_id}")
-    print(f"Same persistent ID: {get_or_create_device_id()}")
-
-# Fixed helper function for backward compatibility
-def create_simple_device_id():
-    """Backward compatible version that returns only 2 values"""
-    device_id, full_hash, _ = create_truly_unique_device_id()
-    return device_id, full_hash
-
-def verify_device_uniqueness():
-    """Function to verify device ID is truly unique (for testing)"""
-    device_id = get_mac_address()
-    
-    # Show current device info
-    st.write("**Current Device Information:**")
-    st.write(f"- Device ID: `{device_id}`")
-    st.write(f"- Platform: {platform.system()}")
-    st.write(f"- Node: {platform.node()}")
-    st.write(f"- Current Time: {datetime.datetime.now()}")
-    
-    # Show file status
-    if os.path.exists(DEVICE_ID_FILE):
-        st.write(f"- Device ID File Exists: ✅")
-        try:
-            file_stat = os.stat(DEVICE_ID_FILE)
-            st.write(f"- File Created: {datetime.datetime.fromtimestamp(file_stat.st_ctime)}")
-            st.write(f"- File Size: {file_stat.st_size} bytes")
+            with open(device_path, 'r') as f:
+                existing_id = f.read().strip()
+                if existing_id and len(existing_id) > 10:
+                    return existing_id
         except:
             pass
-    else:
-        st.write(f"- Device ID File Exists: ❌")
     
-    # Test creating another ID (should be different)
-    st.write("\n**Testing Uniqueness:**")
-    test_id1, _ = create_truly_unique_device_id()
-    test_id2, _ = create_truly_unique_device_id()
-    st.write(f"- Test ID 1: `{test_id1}`")
-    st.write(f"- Test ID 2: `{test_id2}`")
-    st.write(f"- IDs are different: {'✅' if test_id1 != test_id2 else '❌'}")
+    # Create new ID
+    device_id = create_unique_id()
+    
+    # Save it
+    try:
+        with open(device_path, 'w') as f:
+            f.write(device_id)
+        
+        # Save backup info
+        backup_info = {
+            'device_id': device_id,
+            'created': datetime.datetime.now().isoformat(),
+            'platform': platform.system(),
+            'hostname': platform.node(),
+            'path': device_path
+        }
+        
+        backup_path = device_path.replace('.id', '_info.json')
+        with open(backup_path, 'w') as f:
+            import json
+            f.write(json.dumps(backup_info, indent=2))
+            
+    except Exception as e:
+        if 'error_log' in st.session_state:
+            st.session_state.error_log.append(f"Device ID save error: {e}")
     
     return device_id
 
-# Test function to force create new ID (for debugging)
-def force_create_new_device_id():
-    """Force create a new device ID (removes existing file)"""
-    try:
-        if os.path.exists(DEVICE_ID_FILE):
-            os.remove(DEVICE_ID_FILE)
-        if os.path.exists(f"{DEVICE_ID_FILE}_backup.json"):
-            os.remove(f"{DEVICE_ID_FILE}_backup.json")
-        
-        new_id = get_or_create_device_id()
-        st.success(f"Created new device ID: {new_id}")
-        return new_id
-    except Exception as e:
-        st.error(f"Error creating new device ID: {e}")
-        return None
-
-# Simple test
-if __name__ == "__main__":
-    print("Testing device ID generation...")
+# Test function
+def test_device_uniqueness():
+    """Test device ID generation"""
+    st.write("**Device Test Results:**")
+    
+    # Current device info
+    current_id = get_mac_address()
+    device_path = get_system_path()
+    
+    st.write(f"- Device ID: `{current_id}`")
+    st.write(f"- Platform: {platform.system()}")
+    st.write(f"- Hostname: {platform.node()}")
+    st.write(f"- File Path: `{device_path}`")
+    st.write(f"- File Exists: {'✅' if os.path.exists(device_path) else '❌'}")
     
     # Test multiple generations
-    ids = []
-    for i in range(5):
-        device_id, full_hash = create_truly_unique_device_id()
-        ids.append(device_id)
-        print(f"ID {i+1}: {device_id}")
-        time.sleep(0.001)  # Small delay to ensure different timestamps
+    st.write("\n**Uniqueness Test:**")
+    test_ids = []
+    for i in range(3):
+        test_id = create_unique_id()
+        test_ids.append(test_id)
+        st.write(f"- Test ID {i+1}: `{test_id}`")
+        time.sleep(0.001)
     
-    # Check uniqueness
-    unique_ids = set(ids)
-    print(f"\nGenerated {len(ids)} IDs, {len(unique_ids)} unique")
-    print(f"All unique: {'YES' if len(ids) == len(unique_ids) else 'NO'}")
+    unique_count = len(set(test_ids))
+    st.write(f"- Generated {len(test_ids)} IDs, {unique_count} unique ({'✅' if unique_count == len(test_ids) else '❌'})")
     
-    # Test persistent ID
-    print(f"\nPersistent ID: {get_or_create_device_id()}")
-    print(f"Same persistent ID: {get_or_create_device_id()}")
+    return current_id
+
+def force_new_device_id():
+    """Force create new device ID"""
+    device_path = get_system_path()
+    backup_path = device_path.replace('.id', '_info.json')
+    
+    try:
+        # Remove existing files
+        for path in [device_path, backup_path]:
+            if os.path.exists(path):
+                os.remove(path)
+        
+        # Create new ID
+        new_id = get_mac_address()
+        st.success(f"New Device ID: `{new_id}`")
+        return new_id
+        
+    except Exception as e:
+        st.error(f"Error: {e}")
+        return None
 
 # -------------------------------
 # Firebase License Functions
@@ -1713,5 +1554,3 @@ if st.session_state.app_state == "scraping":
         Contact: <a href="mailto:support@umisoft.com" style="text-decoration: none;">support@umisoft.com</a> | © 2025 Umisoft Ltd. | Version 2.0
     </div>
     """, unsafe_allow_html=True)
-
-

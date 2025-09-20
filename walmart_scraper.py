@@ -31,16 +31,6 @@ PLAN_LIMITS = {
 LOCAL_LICENSE_FILE = ".walmart_scraper_license"
 DEVICE_ID_FILE = ".device_fingerprint"
 
-import uuid
-import os
-import datetime
-import hashlib
-import time
-import random
-import platform
-import streamlit as st
-import tempfile
-
 def get_system_unique_path():
     """Get a system-specific path that won't be synced between devices"""
     system = platform.system().lower()
@@ -1723,4 +1713,5 @@ if st.session_state.app_state == "scraping":
         Contact: <a href="mailto:support@umisoft.com" style="text-decoration: none;">support@umisoft.com</a> | © 2025 Umisoft Ltd. | Version 2.0
     </div>
     """, unsafe_allow_html=True)
+
 

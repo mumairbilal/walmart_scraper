@@ -3,6 +3,7 @@ import os
 import time
 import string
 import random
+import hashlib
 import streamlit as st
 import pandas as pd
 from firecrawl import Firecrawl
@@ -23,6 +24,27 @@ PLAN_LIMITS = {
 
 LOCAL_LICENSE_FILE = ".walmart_scraper_license"
 LOCAL_RECORDS_FILE = "records.csv"
+LOCAL_DEVICE_LOCK_FILE = os.path.join(os.path.expanduser("~"), ".walmart_scraper_device_lock")
+
+def bind_license_to_device(license_key):
+    """Bind the license key to this device by creating a hidden lock file."""
+    try:
+        hashed_key = hashlib.sha256(license_key.encode()).hexdigest()
+        with open(LOCAL_DEVICE_LOCK_FILE, "w") as f:
+            f.write(hashed_key)
+        return True
+    except Exception as e:
+        st.session_state.error_log.append(f"{datetime.datetime.now()}: Error binding license to device: {e}")
+        return False
+
+def check_device_binding(license_key):
+    """Check if the license key is bound to this device."""
+    if os.path.exists(LOCAL_DEVICE_LOCK_FILE):
+        with open(LOCAL_DEVICE_LOCK_FILE, "r") as f:
+            stored_hash = f.read().strip()
+        hashed_key = hashlib.sha256(license_key.encode()).hexdigest()
+        return stored_hash == hashed_key
+    return False
 
 def load_records():
     """Load registration records from local CSV."""
@@ -724,7 +746,7 @@ st.markdown("""
         div.stDownloadButton > button:hover {
             background-color: #000000 !important;
             color: #ffffff !important;
-            border-color: #ffffff !important;
+            border-color: #000000 !important;
         }
         div[data-testid="stFileUploaderDropzone"] button {
             background-color: #000000 !important;

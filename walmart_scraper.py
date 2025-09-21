@@ -13,6 +13,7 @@ import json
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+import ctypes  # For hiding file on Windows
 
 # Plan limits configuration
 PLAN_LIMITS = {
@@ -24,14 +25,30 @@ PLAN_LIMITS = {
 
 LOCAL_LICENSE_FILE = ".walmart_scraper_license"
 LOCAL_RECORDS_FILE = "records.csv"
-LOCAL_DEVICE_LOCK_FILE = os.path.join(os.path.expanduser("~"), ".walmart_scraper_device_lock")
+LOCAL_DEVICE_LOCK_FILE = os.path.expanduser("~/.walmart_scraper_device_lock")
+
+def hide_file_on_windows(file_path):
+    """Hide the file on Windows using ctypes."""
+    try:
+        import ctypes
+        FILE_ATTRIBUTE_HIDDEN = 0x02
+        ret = ctypes.windll.kernel32.SetFileAttributesW(file_path, FILE_ATTRIBUTE_HIDDEN)
+        if ret == 0:
+            raise OSError("Failed to hide file on Windows.")
+    except ImportError:
+        pass  # Not on Windows, ignore
 
 def bind_license_to_device(license_key):
     """Bind the license key to this device by creating a hidden lock file."""
     try:
         hashed_key = hashlib.sha256(license_key.encode()).hexdigest()
+        os.makedirs(os.path.dirname(LOCAL_DEVICE_LOCK_FILE), exist_ok=True)
         with open(LOCAL_DEVICE_LOCK_FILE, "w") as f:
             f.write(hashed_key)
+        # Hide the file on Windows
+        if os.name == 'nt':
+            hide_file_on_windows(LOCAL_DEVICE_LOCK_FILE)
+        # On Unix-like, the leading '.' makes it hidden
         return True
     except Exception as e:
         st.session_state.error_log.append(f"{datetime.datetime.now()}: Error binding license to device: {e}")
@@ -426,23 +443,45 @@ if st.session_state.app_state == "auth" and st.session_state.user_data is None:
                 try:
                     is_eligible, client_data = check_license_eligibility(saved_key, "walmart_scraper")
                     if is_eligible:
-                        st.session_state.user_data = client_data
-                        st.session_state.license_valid = True
-                        st.session_state.app_state = "scraping"
-                        st.session_state.firecrawl_api_key = client_data.get("FirecrawlApiKey", "")
-                        plan = client_data.get("Plan", "Free").lower()
-                        if any(word in plan for word in ["basic", "premium", "enterprise"]):
-                            st.session_state.user_tier = "premium"
+                        if not check_device_binding(saved_key):
+                            if bind_license_to_device(saved_key):
+                                st.session_state.user_data = client_data
+                                st.session_state.license_valid = True
+                                st.session_state.app_state = "scraping"
+                                st.session_state.firecrawl_api_key = client_data.get("FirecrawlApiKey", "")
+                                plan = client_data.get("Plan", "Free").lower()
+                                if any(word in plan for word in ["basic", "premium", "enterprise"]):
+                                    st.session_state.user_tier = "premium"
+                                else:
+                                    st.session_state.user_tier = "free"
+                                st.session_state.daily_urls_used = client_data.get("DailyUrlCount", 0)
+                                st.session_state.local_scraped_count = 0
+                                st.session_state.pending_quota_updates = []
+                                if should_reset_daily_count(client_data):
+                                    FirebaseFunctions.reset_daily_url_count(saved_key)
+                                    st.session_state.daily_urls_used = 0
+                                    st.session_state.local_scraped_count = 0
+                                st.rerun()
+                            else:
+                                st.error("Failed to bind license to this device. Contact support.")
                         else:
-                            st.session_state.user_tier = "free"
-                        st.session_state.daily_urls_used = client_data.get("DailyUrlCount", 0)
-                        st.session_state.local_scraped_count = 0
-                        st.session_state.pending_quota_updates = []
-                        if should_reset_daily_count(client_data):
-                            FirebaseFunctions.reset_daily_url_count(saved_key)
-                            st.session_state.daily_urls_used = 0
+                            st.session_state.user_data = client_data
+                            st.session_state.license_valid = True
+                            st.session_state.app_state = "scraping"
+                            st.session_state.firecrawl_api_key = client_data.get("FirecrawlApiKey", "")
+                            plan = client_data.get("Plan", "Free").lower()
+                            if any(word in plan for word in ["basic", "premium", "enterprise"]):
+                                st.session_state.user_tier = "premium"
+                            else:
+                                st.session_state.user_tier = "free"
+                            st.session_state.daily_urls_used = client_data.get("DailyUrlCount", 0)
                             st.session_state.local_scraped_count = 0
-                        st.rerun()
+                            st.session_state.pending_quota_updates = []
+                            if should_reset_daily_count(client_data):
+                                FirebaseFunctions.reset_daily_url_count(saved_key)
+                                st.session_state.daily_urls_used = 0
+                                st.session_state.local_scraped_count = 0
+                            st.rerun()
                     else:
                         os.remove(LOCAL_LICENSE_FILE)
                 except Exception as e:
@@ -912,11 +951,17 @@ if st.session_state.app_state == "auth":
                                         st.error("Failed to send request email. Please try again or contact support.")
                                         # Delete Firebase entry to avoid orphaned requests
                                         FirebaseFunctions._firestore_db.collection("licenses").document(doc_id).delete()
+                                    # Stop spinner
+                                    st.stop()
                                 else:
                                     st.error("Failed to save request. Please try again or contact support.")
+                                    # Stop spinner
+                                    st.stop()
                         except Exception as e:
                             st.error(f"Request failed: {e}")
                             st.session_state.error_log.append(f"{datetime.datetime.now()}: Request error: {e}")
+                            # Stop spinner
+                            st.stop()
         
         if not records_df.empty:
             st.subheader("Previous Requests")
@@ -931,9 +976,10 @@ if st.session_state.app_state == "auth":
                 with st.spinner("Validating license..."):
                     is_eligible, client_data = check_license_eligibility(license_key, "walmart_scraper")
                     if is_eligible:
-                        if dont_ask:
-                            with open(LOCAL_LICENSE_FILE, "w") as f:
-                                f.write(license_key)
+                        if check_device_binding(license_key):
+                            if dont_ask:
+                                with open(LOCAL_LICENSE_FILE, "w") as f:
+                                    f.write(license_key)
                         st.session_state.user_data = client_data
                         st.session_state.license_valid = True
                         st.session_state.app_state = "scraping"
@@ -1004,6 +1050,8 @@ if st.session_state.app_state == "scraping":
     if st.sidebar.button("Logout"):
         if os.path.exists(LOCAL_LICENSE_FILE):
             os.remove(LOCAL_LICENSE_FILE)
+        if os.path.exists(LOCAL_DEVICE_LOCK_FILE):
+            os.remove(LOCAL_DEVICE_LOCK_FILE)
         st.session_state.app_state = "auth"
         st.session_state.user_data = None
         st.session_state.license_valid = False

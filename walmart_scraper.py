@@ -351,12 +351,10 @@ def handle_form_submission(full_name, email, firecrawl_api_key, base_plan):
     if not all([full_name, email, firecrawl_api_key]):
         st.error("Please fill in all required fields including Firecrawl API Key.")
         return False
-    # Validate request
     is_valid, message = validate_new_request(email, base_plan)
     if not is_valid:
         st.error(f"{message}")
         return False
-    # Save request in Firebase
     device_id = get_device_id()
     if not device_id:
         st.error("Failed to generate device ID. Please try again.")
@@ -373,13 +371,11 @@ def handle_form_submission(full_name, email, firecrawl_api_key, base_plan):
     if not doc_id:
         st.error("Failed to save request to database. Please try again.")
         return False
-    # Send email to admin
     email_sent = send_request_email(full_name, email, "Walmart Scraper", base_plan)
     if not email_sent:
         st.error("Failed to send request email. Please try again or contact support.")
         FirebaseFunctions._firestore_db.collection("licenses").document(doc_id).delete()
         return False
-    # Update local records in session_state
     new_record = pd.DataFrame([{
         "Bot Name": "Walmart Scraper",
         "Sender Name": full_name,
@@ -609,7 +605,6 @@ if st.session_state.app_state == "auth":
                             st.session_state.error_log.append(f"{datetime.datetime.now()}: Request error: {e}")
                             st.session_state.spinner_active = False
 
-        # Display success message and DataFrame after rerun
         if st.session_state.request_processed:
             info = st.session_state.request_processed
             st.success(f"""
@@ -626,7 +621,6 @@ if st.session_state.app_state == "auth":
             )
             st.session_state.request_processed = None
 
-        # Display previous requests
         if not st.session_state.records_df.empty:
             st.subheader("Previous Requests")
             st.dataframe(st.session_state.records_df)
@@ -637,7 +631,7 @@ if st.session_state.app_state == "auth":
         if st.button("Validate License"):
             if license_key:
                 with st.spinner("Validating license..."):
-                    is_eligible, client_data, message = check_license_eligibility(license_key, "walmart_scraper")
+                    is_eligible, client_data, message = check_license_eligibility(license_key, "Walmart Scraper")
                     if is_eligible:
                         try:
                             device_id = get_device_id()

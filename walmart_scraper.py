@@ -1,8 +1,6 @@
-import base64
 import datetime
 import os
 import time
-import uuid
 import string
 import random
 import streamlit as st
@@ -11,12 +9,8 @@ from firecrawl import Firecrawl
 import firebase_admin
 from firebase_admin import credentials, firestore
 import json
-import hashlib
-import streamlit.components.v1 as components
-import psutil
-import re
 
-
+# Plan limits configuration
 PLAN_LIMITS = {
     "Free": {"daily_limit": 50, "valid_days": 7},
     "Basic": {"daily_limit": 500, "valid_days": 30},
@@ -25,39 +19,7 @@ PLAN_LIMITS = {
 }
 
 LOCAL_LICENSE_FILE = ".walmart_scraper_license"
-DEVICE_ID_FILE = ".device_id"
 
-def get_device_id():
-    """
-    Returns the MAC address of the most likely physical device interface.
-    Prefers Ethernet > Wi-Fi > anything else.
-    Filters out virtual adapters.
-    """
-    def is_virtual(name: str) -> bool:
-        return bool(re.search(r'^(lo|loop|docker|veth|br-|virbr|vmnet|vbox|vmware|tun|tap|wg)', name, re.I))
-
-    candidates = []
-
-    for iface, addrs in psutil.net_if_addrs().items():
-        for addr in addrs:
-            if addr.family == psutil.AF_LINK and addr.address and addr.address != "00:00:00:00:00:00":
-                if not is_virtual(iface):
-                    candidates.append((iface.lower(), addr.address))
-
-    # Prefer Ethernet > LAN > en* > Wi-Fi
-    for preferred in ["ethernet", "lan", "eth", "en", "enp"]:
-        for iface, mac in candidates:
-            if preferred in iface:
-                return mac
-
-    # Fallback to Wi-Fi
-    for iface, mac in candidates:
-        if "wi" in iface or "wl" in iface:
-            return mac
-
-    # Fallback: return first candidate
-    return candidates[0][1] if candidates else None
-    
 class FirebaseFunctions:
     _firestore_db = None
     
@@ -72,67 +34,6 @@ class FirebaseFunctions:
                 cred = credentials.Certificate("umisoft-client-database-firebase-adminsdk.json")
             firebase_admin.initialize_app(cred)
         FirebaseFunctions._firestore_db = firestore.client()
-    
-    @staticmethod
-    def is_device_already_registered(device_id):
-        try:
-            if FirebaseFunctions._firestore_db is None:
-                FirebaseFunctions.initialize_firebase()
-            clients_ref = FirebaseFunctions._firestore_db.collection("licenses")
-            query = clients_ref.where("ClientDeviceId", "==", device_id)
-            docs = list(query.stream())
-            return len(docs) > 0
-        except Exception as e:
-            if 'error_log' in st.session_state:
-                st.session_state.error_log.append(f"{datetime.datetime.now()}: Device reg check error: {e}")
-            return False
-    
-    @staticmethod
-    def get_registration_by_device_id(device_id):
-        try:
-            if FirebaseFunctions._firestore_db is None:
-                FirebaseFunctions.initialize_firebase()
-            clients_ref = FirebaseFunctions._firestore_db.collection("licenses")
-            query = clients_ref.where("ClientDeviceId", "==", device_id)
-            docs = list(query.stream())
-            if len(docs) > 0:
-                client_data = docs[0].to_dict()
-                client_data["id"] = docs[0].id
-                return client_data
-            return None
-        except Exception as e:
-            if 'error_log' in st.session_state:
-                st.session_state.error_log.append(f"{datetime.datetime.now()}: Get reg by device error: {e}")
-            return None
-    
-    @staticmethod
-    def is_client_eligible(client_data, expected_bot_name, expected_valid_date, device_id):
-        if client_data is None:
-            return False
-        if str(client_data.get("ToolName", "")) != str(expected_bot_name):
-            return False
-        if str(client_data.get("AccessStatus", "")) != "ON":
-            return False
-        try:
-            date_string = str(client_data.get("ValidUntil", ""))
-            date_formats = ["%d-%b-%y", "%Y-%m-%d", "%d-%m-%Y"]
-            valid_date = None
-            for fmt in date_formats:
-                try:
-                    valid_date = datetime.datetime.strptime(date_string, fmt)
-                    break
-                except ValueError:
-                    continue
-            if valid_date is None or valid_date < expected_valid_date:
-                return False
-        except Exception as e:
-            st.error(f"Date validation error: {e}")
-            return False
-        registered_device = client_data.get("ClientDeviceId", "")
-        if not registered_device or registered_device != device_id:
-            st.error(f"Device mismatch: Registered {registered_device}, Current {device_id}")
-            return False
-        return True
     
     @staticmethod
     def get_client_data_by_license_key(license_key):
@@ -170,6 +71,34 @@ class FirebaseFunctions:
             return None
     
     @staticmethod
+    def is_client_eligible(client_data, expected_bot_name, expected_valid_date):
+        if client_data is None:
+            return False
+        if str(client_data.get("ToolName", "")) != str(expected_bot_name):
+            return False
+        if str(client_data.get("AccessStatus", "")) != "ON":
+            return False
+        try:
+            date_string = str(client_data.get("ValidUntil", ""))
+            date_formats = ["%d-%b-%y", "%Y-%m-%d", "%d-%m-%Y"]
+            valid_date = None
+            for fmt in date_formats:
+                try:
+                    valid_date = datetime.datetime.strptime(date_string, fmt)
+                    break
+                except ValueError:
+                    continue
+            if valid_date is None or valid_date < expected_valid_date:
+                return False
+        except Exception as e:
+            st.error(f"Date validation error: {e}")
+            return False
+        # Check if the license key is already in use
+        if client_data.get("ActiveSession", False):
+            return False
+        return True
+    
+    @staticmethod
     def add_new_client(client_data):
         try:
             if FirebaseFunctions._firestore_db is None:
@@ -183,8 +112,7 @@ class FirebaseFunctions:
             plan_config = PLAN_LIMITS.get(plan, PLAN_LIMITS["Free"])
             client_data["DailyUrlLimit"] = plan_config["daily_limit"]
             client_data["ValidUntil"] = (datetime.datetime.now() + datetime.timedelta(days=plan_config["valid_days"])).strftime("%Y-%m-%d")
-            device_id = get_device_id()
-            client_data["ClientDeviceId"] = device_id
+            client_data["ActiveSession"] = False
             clients_ref = FirebaseFunctions._firestore_db.collection("licenses")
             new_doc_ref = clients_ref.document()
             new_doc_ref.set(client_data)
@@ -194,7 +122,25 @@ class FirebaseFunctions:
             return None, None
     
     @staticmethod
-    def update_client_validation(license_key, device_id, url_count):
+    def set_active_session(license_key, active=True):
+        try:
+            if FirebaseFunctions._firestore_db is None:
+                FirebaseFunctions.initialize_firebase()
+            clients_ref = FirebaseFunctions._firestore_db.collection("licenses")
+            query = clients_ref.where("LicenseKey", "==", license_key)
+            docs = list(query.stream())
+            if len(docs) > 0:
+                doc_ref = clients_ref.document(docs[0].id)
+                doc_ref.update({"ActiveSession": active})
+                return True
+            return False
+        except Exception as e:
+            if 'error_log' in st.session_state:
+                st.session_state.error_log.append(f"{datetime.datetime.now()}: Set active session error: {e}")
+            return False
+    
+    @staticmethod
+    def update_client_validation(license_key, url_count):
         try:
             if FirebaseFunctions._firestore_db is None:
                 FirebaseFunctions.initialize_firebase()
@@ -206,7 +152,6 @@ class FirebaseFunctions:
                 doc_ref = clients_ref.document(docs[0].id)
                 batch.update(doc_ref, {
                     "LastValidated": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "ClientDeviceId": device_id,
                     "DailyUrlCount": firestore.Increment(url_count)
                 })
                 batch.commit()
@@ -218,7 +163,7 @@ class FirebaseFunctions:
             return False
     
     @staticmethod
-    def retry_pending_quota_updates(license_key, device_id, pending_updates):
+    def retry_pending_quota_updates(license_key, pending_updates):
         try:
             if FirebaseFunctions._firestore_db is None:
                 FirebaseFunctions.initialize_firebase()
@@ -230,7 +175,6 @@ class FirebaseFunctions:
                 doc_ref = clients_ref.document(docs[0].id)
                 batch.update(doc_ref, {
                     "LastValidated": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "ClientDeviceId": device_id,
                     "DailyUrlCount": firestore.Increment(len(pending_updates))
                 })
                 batch.commit()
@@ -263,13 +207,13 @@ class FirebaseFunctions:
         chars = string.ascii_uppercase + string.digits
         return ''.join(random.choice(chars) for _ in range(length))
 
-def check_license_eligibility(license_key, bot_name, device_id):
+def check_license_eligibility(license_key, bot_name):
     try:
         expected_valid_date = datetime.datetime.now()
         client_data = FirebaseFunctions.get_client_data_by_license_key(license_key)
         if not client_data:
             return False, None
-        is_eligible = FirebaseFunctions.is_client_eligible(client_data, bot_name, expected_valid_date, device_id)
+        is_eligible = FirebaseFunctions.is_client_eligible(client_data, bot_name, expected_valid_date)
         return is_eligible, client_data
     except Exception as e:
         st.error(f"License check error: {e}")
@@ -285,7 +229,7 @@ def should_reset_daily_count(client_data):
     except ValueError:
         return True
 
-def validate_new_registration(email, device_id):
+def validate_new_registration(email):
     existing_email = FirebaseFunctions.get_client_data_by_email(email)
     if existing_email:
         return False, "Email already exists. Login with existing key."
@@ -343,66 +287,38 @@ if "pending_quota_updates" not in st.session_state:
 if "rate_limit_delay" not in st.session_state:
     st.session_state.rate_limit_delay = 0.5
 
-# Auto-login with device ID
+# Auto-login with saved license key
 if st.session_state.app_state == "auth" and st.session_state.user_data is None:
-    try:
-        device_id = get_device_id()
-        client_data = FirebaseFunctions.get_registration_by_device_id(device_id)
-        if client_data:
-            with st.spinner("Auto-validating device..."):
-                is_eligible, client_data = check_license_eligibility(client_data.get("LicenseKey", ""), "walmart_scraper", device_id)
-                if is_eligible:
-                    st.session_state.user_data = client_data
-                    st.session_state.license_valid = True
-                    st.session_state.app_state = "scraping"
-                    st.session_state.firecrawl_api_key = client_data.get("FirecrawlApiKey", "")
-                    plan = client_data.get("Plan", "Free").lower()
-                    if any(word in plan for word in ["basic", "premium", "enterprise"]):
-                        st.session_state.user_tier = "premium"
-                    else:
-                        st.session_state.user_tier = "free"
-                    st.session_state.daily_urls_used = client_data.get("DailyUrlCount", 0)
-                    st.session_state.local_scraped_count = 0
-                    st.session_state.pending_quota_updates = []
-                    if should_reset_daily_count(client_data):
-                        FirebaseFunctions.reset_daily_url_count(client_data.get("LicenseKey", ""))
-                        st.session_state.daily_urls_used = 0
-                        st.session_state.local_scraped_count = 0
-                    st.rerun()
-        # Fallback to saved license file if no Firebase match
-        if os.path.exists(LOCAL_LICENSE_FILE):
-            with open(LOCAL_LICENSE_FILE, "r") as f:
-                saved_key = f.read().strip()
-            if saved_key:
-                with st.spinner("Auto-validating saved license..."):
-                    try:
-                        is_eligible, client_data = check_license_eligibility(saved_key, "walmart_scraper", device_id)
-                        if is_eligible:
-                            st.session_state.user_data = client_data
-                            st.session_state.license_valid = True
-                            st.session_state.app_state = "scraping"
-                            st.session_state.firecrawl_api_key = client_data.get("FirecrawlApiKey", "")
-                            plan = client_data.get("Plan", "Free").lower()
-                            if any(word in plan for word in ["basic", "premium", "enterprise"]):
-                                st.session_state.user_tier = "premium"
-                            else:
-                                st.session_state.user_tier = "free"
-                            st.session_state.daily_urls_used = client_data.get("DailyUrlCount", 0)
-                            st.session_state.local_scraped_count = 0
-                            st.session_state.pending_quota_updates = []
-                            if should_reset_daily_count(client_data):
-                                FirebaseFunctions.reset_daily_url_count(saved_key)
-                                st.session_state.daily_urls_used = 0
-                                st.session_state.local_scraped_count = 0
-                            st.rerun()
+    if os.path.exists(LOCAL_LICENSE_FILE):
+        with open(LOCAL_LICENSE_FILE, "r") as f:
+            saved_key = f.read().strip()
+        if saved_key:
+            with st.spinner("Auto-validating saved license..."):
+                try:
+                    is_eligible, client_data = check_license_eligibility(saved_key, "walmart_scraper")
+                    if is_eligible:
+                        FirebaseFunctions.set_active_session(saved_key, True)
+                        st.session_state.user_data = client_data
+                        st.session_state.license_valid = True
+                        st.session_state.app_state = "scraping"
+                        st.session_state.firecrawl_api_key = client_data.get("FirecrawlApiKey", "")
+                        plan = client_data.get("Plan", "Free").lower()
+                        if any(word in plan for word in ["basic", "premium", "enterprise"]):
+                            st.session_state.user_tier = "premium"
                         else:
-                            os.remove(LOCAL_LICENSE_FILE)
-                    except Exception as e:
-                        st.session_state.error_log.append(f"{datetime.datetime.now()}: Auto-login error: {e}")
-    except Exception as e:
-        st.error("JavaScript is required to run this app. Please enable JavaScript in your browser or contact support.")
-        st.session_state.error_log.append(f"{datetime.datetime.now()}: Auto-login error: {e}")
-        st.stop()
+                            st.session_state.user_tier = "free"
+                        st.session_state.daily_urls_used = client_data.get("DailyUrlCount", 0)
+                        st.session_state.local_scraped_count = 0
+                        st.session_state.pending_quota_updates = []
+                        if should_reset_daily_count(client_data):
+                            FirebaseFunctions.reset_daily_url_count(saved_key)
+                            st.session_state.daily_urls_used = 0
+                            st.session_state.local_scraped_count = 0
+                        st.rerun()
+                    else:
+                        os.remove(LOCAL_LICENSE_FILE)
+                except Exception as e:
+                    st.session_state.error_log.append(f"{datetime.datetime.now()}: Auto-login error: {e}")
 
 # CSS
 st.markdown("""
@@ -796,7 +712,6 @@ if st.session_state.app_state == "auth":
     
     with tab1:
         st.subheader("Create Your Account")
-        device_id = get_device_id()
         with st.form("registration_form"):
             col1, col2 = st.columns([3, 2])
             with col1:
@@ -811,21 +726,19 @@ if st.session_state.app_state == "auth":
                 ], help="Choose your subscription plan")
                 base_plan = selected_plan.split(" - ")[0].replace(" Plan", "")
             with col2:
-                st.text_input("Device ID", value=device_id, disabled=True, 
-                             help="Unique identifier for this device")
                 registration_date = datetime.datetime.now().strftime("%Y-%m-%d")
                 st.text_input("Registration Date", value=registration_date, disabled=True)
             agree_terms = st.checkbox("I agree to the Terms of Service and Privacy Policy")
             dont_ask = st.checkbox("Don't ask again on this device", value=True)
             submitted = st.form_submit_button("Create Account")
             if submitted:
-                with st.spinner("Creating account and validating device..."):
+                with st.spinner("Creating account..."):
                     if not all([full_name, email, firecrawl_api_key]):
                         st.error("Please fill in all required fields including Firecrawl API Key.")
                     elif not agree_terms:
                         st.error("You must agree to the Terms of Service.")
                     else:
-                        is_valid, message = validate_new_registration(email, device_id)
+                        is_valid, message = validate_new_registration(email)
                         if not is_valid:
                             st.error(f"{message}")
                         else:
@@ -833,18 +746,19 @@ if st.session_state.app_state == "auth":
                                 client_data = {
                                     "ClientName": full_name,
                                     "ClientEmail": email,
-                                    "ClientDeviceId": device_id,
                                     "RegistrationDate": registration_date,
                                     "Plan": base_plan,
                                     "ToolName": "walmart_scraper",
                                     "AccessStatus": "ON",
                                     "DailyUrlCount": 0,
-                                    "FirecrawlApiKey": firecrawl_api_key
+                                    "FirecrawlApiKey": firecrawl_api_key,
+                                    "ActiveSession": False
                                 }
                                 license_key, doc_id = FirebaseFunctions.add_new_client(client_data)
                                 if license_key:
                                     client_data["LicenseKey"] = license_key
                                     client_data["id"] = doc_id
+                                    FirebaseFunctions.set_active_session(license_key, True)
                                     st.session_state.user_data = client_data
                                     st.session_state.license_valid = True
                                     st.session_state.app_state = "scraping"
@@ -856,12 +770,11 @@ if st.session_state.app_state == "auth":
                                     Account Created Successfully!
                                     
                                     **Plan:** {selected_plan}  
-                                    **License Key:** `{license_key}`  
-                                    **Device:** {device_id}
+                                    **License Key:** `{license_key}`
                                     
-                                    Important: Save your license key securely. This device is now linked to your account.
+                                    Important: Save your license key securely. Only one device can use this license at a time.
                                     """)
-                                    st.session_state.error_log.append(f"{datetime.datetime.now()}: New account registered - Email: {email}, Device: {device_id}, Plan: {base_plan}")
+                                    st.session_state.error_log.append(f"{datetime.datetime.now()}: New account registered - Email: {email}, Plan: {base_plan}")
                                     st.rerun()
                                 else:
                                     st.error("Failed to create account. Please try again or contact support.")
@@ -871,21 +784,14 @@ if st.session_state.app_state == "auth":
     
     with tab2:
         st.subheader("Login to Your Account")
-        try:
-            device_id = get_device_id()
-        except Exception as e:
-            st.error("JavaScript is required to run this app. Please enable JavaScript in your browser or contact support.")
-            st.session_state.error_log.append(f"{datetime.datetime.now()}: Device validation error: {e}")
-            st.stop()
         license_key = st.text_input("License Key", type="password", placeholder="Enter your license key")
-        st.text_input("Device ID", value=device_id, disabled=True, 
-                     help="This must match the device ID used during registration")
         dont_ask = st.checkbox("Don't ask again on this device")
         if st.button("Validate License"):
             if license_key:
-                with st.spinner("Validating license and device..."):
-                    is_eligible, client_data = check_license_eligibility(license_key, "walmart_scraper", device_id)
+                with st.spinner("Validating license..."):
+                    is_eligible, client_data = check_license_eligibility(license_key, "walmart_scraper")
                     if is_eligible:
+                        FirebaseFunctions.set_active_session(license_key, True)
                         if dont_ask:
                             with open(LOCAL_LICENSE_FILE, "w") as f:
                                 f.write(license_key)
@@ -908,17 +814,7 @@ if st.session_state.app_state == "auth":
                         st.success("License validated successfully!")
                         st.rerun()
                     else:
-                        st.error("Invalid license key or device mismatch.")
-                        if client_data:
-                            registered_device = client_data.get("ClientDeviceId", "")
-                            if registered_device and registered_device != device_id:
-                                st.info(f"""
-                                **Device Mismatch Information:**
-                                - Registered Device: `{registered_device}`
-                                - Current Device: `{device_id}`
-                                
-                                This license is tied to a different device. Contact support if you've replaced your hardware.
-                                """)
+                        st.error("Invalid license key or license already in use on another device.")
             else:
                 st.error("Please enter your license key.")
     
@@ -927,16 +823,10 @@ if st.session_state.app_state == "auth":
 # Scraper Interface
 if st.session_state.app_state == "scraping":
     st.sidebar.header("Scraper Settings")
-    def sidebar_header(title, icon_path=None, subtitle=None, icon_width=24):
-        html = '<div style="display: flex; align-items: center; margin-bottom: 10px;">'
-        if icon_path and os.path.exists(icon_path):
-            with open(icon_path, "rb") as f:
-                data = f.read()
-            encoded = base64.b64encode(data).decode()
-            html += f"<img src='data:image/png;base64,{encoded}' width='{icon_width}' style='margin-right:8px;'>"
-        html += f"<span style='font-size: 18px; font-weight: bold;'>{title}</span></div>"
+    def sidebar_header(title, subtitle=None):
+        html = f'<div style="display: flex; align-items: center; margin-bottom: 10px;"><span style="font-size: 18px; font-weight: bold;">{title}</span></div>'
         if subtitle:
-            html += f"<div style='font-size: 12px; color: #666666; margin-bottom: 10px;'>{subtitle}</div>"
+            html += f'<div style="font-size: 12px; color: #666666; margin-bottom: 10px;">{subtitle}</div>'
         st.sidebar.markdown(html, unsafe_allow_html=True)
 
     sidebar_header(
@@ -980,14 +870,13 @@ if st.session_state.app_state == "scraping":
         **Valid Until:** {st.session_state.user_data.get('ValidUntil', 'N/A')}  
         **Credits Used:** {st.session_state.daily_urls_used} / {st.session_state.user_data.get('DailyUrlLimit', 5000)}  
         **Local Scraped Count:** {st.session_state.local_scraped_count}  
-        **Pending Quota Updates:** {len(st.session_state.pending_quota_updates)}  
-        **Device ID:** {get_device_id()}
+        **Pending Quota Updates:** {len(st.session_state.pending_quota_updates)}
         """)
     
     if st.sidebar.button("Logout"):
         if os.path.exists(LOCAL_LICENSE_FILE):
             os.remove(LOCAL_LICENSE_FILE)
-        #clear_device_id()
+        FirebaseFunctions.set_active_session(st.session_state.user_data.get("LicenseKey", ""), False)
         st.session_state.app_state = "auth"
         st.session_state.user_data = None
         st.session_state.license_valid = False
@@ -999,13 +888,10 @@ if st.session_state.app_state == "scraping":
         st.session_state.error_log = []
         st.rerun()
 
-    image_path = "D:/icon2.png"
     try:
         st.set_page_config(page_title="Walmart Product Scraper", layout="wide", initial_sidebar_state="expanded")
     except:
         pass
-    if os.path.exists(image_path):
-        st.image(image_path, width=300)
     st.title("Walmart Product Scraper")
     st.markdown("**Extract structured product data with ease. Perfect for market research and catalog building.**")
 
@@ -1072,7 +958,6 @@ if st.session_state.app_state == "scraping":
         st.session_state.local_scraped_count = 0
         st.session_state.all_data = []
         license_key = st.session_state.user_data.get("LicenseKey", "")
-        device_id = get_device_id()
 
         progress_bar = st.progress(0)
         status_text = st.empty()
@@ -1141,7 +1026,7 @@ if st.session_state.app_state == "scraping":
                     st.session_state.pending_quota_updates.append(url)
                     progress_bar.progress((i + 1) / len(urls))
                     try:
-                        if FirebaseFunctions.update_client_validation(license_key, device_id, 1):
+                        if FirebaseFunctions.update_client_validation(license_key, 1):
                             st.session_state.daily_urls_used += 1
                             st.session_state.pending_quota_updates.pop()
                         else:
@@ -1162,7 +1047,7 @@ if st.session_state.app_state == "scraping":
 
         if st.session_state.pending_quota_updates:
             try:
-                if FirebaseFunctions.retry_pending_quota_updates(license_key, device_id, st.session_state.pending_quota_updates):
+                if FirebaseFunctions.retry_pending_quota_updates(license_key, st.session_state.pending_quota_updates):
                     st.session_state.daily_urls_used += len(st.session_state.pending_quota_updates)
                     st.session_state.pending_quota_updates = []
                     st.success("Successfully synced all pending quota updates.")
@@ -1199,4 +1084,3 @@ if st.session_state.app_state == "scraping":
         with st.expander("Error Log", expanded=False):
             for log in st.session_state.error_log[-10:]:
                 st.write(log)
-

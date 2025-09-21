@@ -567,7 +567,7 @@ if st.session_state.app_state == "auth":
                                 "ClientName": full_name,
                                 "ClientEmail": email,
                                 "Plan": base_plan,
-                                "ToolName": bot_name,
+                                "ToolName": "walmart_scraper",
                                 "FirecrawlApiKey": firecrawl_api_key,
                                 "DeviceID": device_id
                             }
@@ -575,9 +575,33 @@ if st.session_state.app_state == "auth":
                             if not doc_id:
                                 st.error("Failed to save request to database. Please try again.")
                                 st.stop()
-                            # Send email to admin
+                            # Send email to admin with enhanced error handling
                             st.session_state.error_log.append(f"{datetime.datetime.now()}: Attempting to send email for {email}")
-                            email_sent = send_request_email(full_name, email, "Walmart Scraper", base_plan)
+                            try:
+                                with smtplib.SMTP('smtp.gmail.com', 587, timeout=10) as server:
+                                    server.starttls()
+                                    server.login(os.getenv("SMTP_USER", "umisoftbotnotifier@gmail.com"), os.getenv("SMTP_PASS", "ylor vkis zarh mokt"))
+                                    msg = MIMEMultipart()
+                                    msg['From'] = os.getenv("SMTP_USER", "umisoftbotnotifier@gmail.com")
+                                    msg['To'] = os.getenv("ADMIN_EMAIL", "umisoftbotnotifier@gmail.com")
+                                    msg['Subject'] = "New Client License Request"
+                                    body = f"""
+                                    <html>
+                                    <head><style>body{{font-family:Arial,sans-serif;line-height:1.6;color:#333333;}} .container{{max-width:600px;margin:0 auto;padding:20px;border:1px solid #e0e0e0;border-radius:10px;}} .header{{background-color:#f7f7f7;padding:10px 20px;border-bottom:1px solid #e0e0e0;text-align:center;}} .header h1{{margin:0;font-size:24px;color:#000000;}} .content{{padding:20px;}} .content p{{margin:0;}} .footer{{text-align:center;margin-top:20px;}} .footer p{{font-size:12px;color:#888888;}}</style></head>
+                                    <body><div class='container'><div class='header'><h1>New Key Request</h1></div><div class='content'><p><strong>Name:</strong> {full_name}</p><br><p><strong>Client Email:</strong> <a href='mailto:{email}'>{email}</a></p><br><p><strong>Bot Name:</strong> Walmart Scraper</p><br><p><strong>Plan:</strong> {base_plan}</p></div><div class='footer'><p>Thank you for using our bot service. Please process this request.</p></div></div></body></html>"""
+                                    msg.attach(MIMEText(body, 'html'))
+                                    server.send_message(msg)
+                                email_sent = True
+                                st.session_state.error_log.append(f"{datetime.datetime.now()}: Email sent successfully for {email}")
+                            except smtplib.SMTPAuthenticationError as e:
+                                st.session_state.error_log.append(f"{datetime.datetime.now()}: SMTP Authentication Error: {e}")
+                                email_sent = False
+                            except smtplib.SMTPException as e:
+                                st.session_state.error_log.append(f"{datetime.datetime.now()}: SMTP Exception: {e}")
+                                email_sent = False
+                            except Exception as e:
+                                st.session_state.error_log.append(f"{datetime.datetime.now()}: Unexpected email error: {e}")
+                                email_sent = False
                             if not email_sent:
                                 st.error("Failed to send request email. Please try again or contact support.")
                                 FirebaseFunctions._firestore_db.collection("licenses").document(doc_id).delete()
@@ -593,11 +617,23 @@ if st.session_state.app_state == "auth":
                             }])
                             records_df = pd.concat([records_df, new_record], ignore_index=True)
                             save_records(records_df)
-                            st.session_state.error_log.append(f"{datetime.datetime.now()}: Email sent successfully for {email}")
+                            st.session_state.error_log.append(f"{datetime.datetime.now()}: Local records updated for {email}")
                         except Exception as e:
                             st.error(f"Request failed: {e}")
                             st.session_state.error_log.append(f"{datetime.datetime.now()}: Request error: {e}")
                             st.stop()
+                    # Display success message outside spinner
+                    st.success(f"""
+                    Request sent successfully!
+                    - Name: {full_name}
+                    - Email: {email}
+                    - Bot: Walmart Scraper
+                    - Plan: {selected_plan}
+                    
+                    You will receive your license key via email after approval.
+                    """)
+                    st.session_state.error_log.append(f"{datetime.datetime.now()}: License request sent - Email: {email}, Bot: Walmart Scraper, Plan: {base_plan}")
+                    st.stop()
                     # Display success message outside spinner
                     st.success(f"""
                     Request sent successfully!
@@ -909,3 +945,4 @@ if st.session_state.app_state == "scraping":
         with st.expander("Error Log", expanded=False):
             for log in st.session_state.error_log[-10:]:
                 st.write(log)
+

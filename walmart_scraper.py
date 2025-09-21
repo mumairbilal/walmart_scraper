@@ -13,7 +13,8 @@ from firebase_admin import credentials, firestore
 import json
 import hashlib
 import streamlit.components.v1 as components
-from getmac import get_mac_address
+import psutil
+import re
 
 
 PLAN_LIMITS = {
@@ -27,7 +28,35 @@ LOCAL_LICENSE_FILE = ".walmart_scraper_license"
 DEVICE_ID_FILE = ".device_id"
 
 def get_device_id():
-    return get_mac_address()
+    """
+    Returns the MAC address of the most likely physical device interface.
+    Prefers Ethernet > Wi-Fi > anything else.
+    Filters out virtual adapters.
+    """
+    def is_virtual(name: str) -> bool:
+        return bool(re.search(r'^(lo|loop|docker|veth|br-|virbr|vmnet|vbox|vmware|tun|tap|wg)', name, re.I))
+
+    candidates = []
+
+    for iface, addrs in psutil.net_if_addrs().items():
+        for addr in addrs:
+            if addr.family == psutil.AF_LINK and addr.address and addr.address != "00:00:00:00:00:00":
+                if not is_virtual(iface):
+                    candidates.append((iface.lower(), addr.address))
+
+    # Prefer Ethernet > LAN > en* > Wi-Fi
+    for preferred in ["ethernet", "lan", "eth", "en", "enp"]:
+        for iface, mac in candidates:
+            if preferred in iface:
+                return mac
+
+    # Fallback to Wi-Fi
+    for iface, mac in candidates:
+        if "wi" in iface or "wl" in iface:
+            return mac
+
+    # Fallback: return first candidate
+    return candidates[0][1] if candidates else None
     
 class FirebaseFunctions:
     _firestore_db = None

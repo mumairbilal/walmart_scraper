@@ -22,7 +22,7 @@ PLAN_LIMITS = {
     "Enterprise": {"daily_limit": 5000, "valid_days": 365}
 }
 
-LOCAL_RECORDS_FILE = os.path.expanduser("~/.walmart_scraper_records.csv")
+LOCAL_RECORDS_FILE = "./walmart_scraper_records.csv"  # Changed to current dir for Railway
 LOCAL_DEVICE_ID_FILE = os.path.expanduser("~/.walmart_scraper_device_id")
 
 def hide_file_on_windows(file_path):
@@ -68,7 +68,6 @@ def load_records():
 def save_records(df):
     """Save registration records to local CSV."""
     try:
-        os.makedirs(os.path.dirname(LOCAL_RECORDS_FILE), exist_ok=True)
         df.to_csv(LOCAL_RECORDS_FILE, index=False)
         if os.name == 'nt':
             hide_file_on_windows(LOCAL_RECORDS_FILE)
@@ -446,9 +445,12 @@ if "pending_quota_updates" not in st.session_state:
     st.session_state.pending_quota_updates = []
 if "rate_limit_delay" not in st.session_state:
     st.session_state.rate_limit_delay = 0.5
+if "request_processed" not in st.session_state:
+    st.session_state.request_processed = None
 
-# Load records
-records_df = load_records()
+# Load records into session state
+if "records_df" not in st.session_state:
+    st.session_state.records_df = load_records()
 
 # CSS
 st.markdown("""
@@ -839,15 +841,8 @@ if st.session_state.app_state == "auth":
     st.markdown("**Professional-grade data extraction for market research and competitive analysis.**")
     
     tab1, tab2 = st.tabs(["Request License Key", "Existing User"])
-    # Initialize from saved records on first load
-    if "records_df" not in st.session_state:
-        st.session_state.records_df = load_records()
     with tab1:
         st.subheader("Request License Key")
-
-        # ✅ Initialize records_df in session_state
-        if "records_df" not in st.session_state:
-            st.session_state.records_df = load_records()
 
         with st.form("request_form"):
             col1, col2 = st.columns([3, 2])
@@ -874,8 +869,10 @@ if st.session_state.app_state == "auth":
             if submitted:
                 if not all([full_name, email, firecrawl_api_key]):
                     st.error("Please fill in all required fields including Firecrawl API Key.")
+                    return
                 elif not agree_terms:
                     st.error("You must agree to the Terms of Service.")
+                    return
                 else:
                     with st.spinner("Processing request..."):
                         try:
@@ -883,13 +880,13 @@ if st.session_state.app_state == "auth":
                             is_valid, message = validate_new_request(email, base_plan)
                             if not is_valid:
                                 st.error(f"{message}")
-                                st.stop()
+                                return
 
                             # Save request in Firebase
                             device_id = get_device_id()
                             if not device_id:
                                 st.error("Failed to generate device ID. Please try again.")
-                                st.stop()
+                                return
 
                             client_data = {
                                 "ClientName": full_name,
@@ -902,16 +899,16 @@ if st.session_state.app_state == "auth":
                             doc_id = FirebaseFunctions.add_request(client_data)
                             if not doc_id:
                                 st.error("Failed to save request to database. Please try again.")
-                                st.stop()
+                                return
 
                             # Send email to admin
                             email_sent = send_request_email(full_name, email, "Walmart Scraper", base_plan)
                             if not email_sent:
                                 st.error("Failed to send request email. Please try again or contact support.")
                                 FirebaseFunctions._firestore_db.collection("licenses").document(doc_id).delete()
-                                st.stop()
+                                return
 
-                            # ✅ Update local records in session_state
+                            # Update local records in session_state
                             new_record = pd.DataFrame([{
                                 "Bot Name": "Walmart Scraper",
                                 "Sender Name": full_name,
@@ -925,27 +922,25 @@ if st.session_state.app_state == "auth":
                             )
                             save_records(st.session_state.records_df)
 
-                            # ✅ Save success info for next rerun
-                            st.session_state.request_success = {
+                            # Store success info
+                            st.session_state.request_processed = {
                                 "full_name": full_name,
                                 "email": email,
                                 "bot": "Walmart Scraper",
                                 "plan": selected_plan
                             }
+                            st.session_state.spinner_active = False
+                            st.rerun()
 
                         except Exception as e:
                             st.error(f"Request failed: {e}")
-                            st.session_state.error_log.append(
-                                f"{datetime.datetime.now()}: Request error: {e}"
-                            )
-                    
-                        # Explicitly stop spinner and update UI
-                        st.session_state.spinner_active = False  
-                        st.rerun()  # force refresh
+                            st.session_state.error_log.append(f"{datetime.datetime.now()}: Request error: {e}")
+                            st.session_state.spinner_active = False
+                            return
 
-        # ✅ Show success after rerun
-        if "request_success" in st.session_state and st.session_state.request_success:
-            info = st.session_state.request_success
+        # Display success message and DataFrame after rerun
+        if st.session_state.request_processed:
+            info = st.session_state.request_processed
             st.success(f"""
             Request sent successfully!
             - Name: {info['full_name']}
@@ -958,15 +953,13 @@ if st.session_state.app_state == "auth":
             st.session_state.error_log.append(
                 f"{datetime.datetime.now()}: License request sent - Email: {info['email']}, Bot: {info['bot']}, Plan: {info['plan']}"
             )
-            st.session_state.request_success = None  # clear flag
+            st.session_state.request_processed = None  # Clear flag
 
-        # ✅ Display session DataFrame (persistent)
+        # Display previous requests
         if not st.session_state.records_df.empty:
             st.subheader("Previous Requests")
             st.dataframe(st.session_state.records_df)
 
-
-    
     with tab2:
         st.subheader("Login to Your Account")
         license_key = st.text_input("License Key", type="password", placeholder="Enter your license key")
@@ -979,10 +972,10 @@ if st.session_state.app_state == "auth":
                             device_id = get_device_id()
                             if not device_id:
                                 st.error("Failed to generate device ID. Please try again.")
-                                st.stop()
+                                return
                             if not FirebaseFunctions.bind_license_to_device_in_firebase(license_key, device_id):
                                 st.error("Failed to bind license to device in Firebase. Please try again.")
-                                st.stop()
+                                return
                             st.session_state.user_data = client_data
                             st.session_state.license_valid = True
                             st.session_state.app_state = "scraping"

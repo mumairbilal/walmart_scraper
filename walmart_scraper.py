@@ -593,25 +593,51 @@ if st.session_state.app_state == "auth":
                 if not agree_terms:
                     st.error("You must agree to the Terms of Service.")
                 else:
-                    with st.spinner("Processing request..."):
+                    # Use a simple flag to prevent multiple executions
+                    if 'form_submitted' not in st.session_state:
+                        st.session_state.form_submitted = False
+                    
+                    if not st.session_state.form_submitted:
+                        st.session_state.form_submitted = True
+                        
+                        # Show loading message immediately
+                        progress_placeholder = st.empty()
+                        progress_placeholder.info("🔄 Processing your request...")
+                        
                         try:
                             result = handle_form_submission(full_name, email, firecrawl_api_key, base_plan)
-                            #st.rerun()
-                            info = st.session_state.request_success
-                            st.success(f"""
-                            Request sent successfully!
-                            - Name: {full_name}
-                            - Email: {email}
-                            - Bot: {bot_name}
-                            - Plan: {base_plan}""")
-                            if not st.session_state.records_df.empty:
-                                st.subheader("Previous Requests")
-                                st.dataframe(st.session_state.records_df)
+                            
+                            # Clear the loading message
+                            progress_placeholder.empty()
+                            
+                            if result:
+                                st.success(f"""
+                                ✅ Request sent successfully!
+                                - Name: {full_name}
+                                - Email: {email}
+                                - Bot: {bot_name}
+                                - Plan: {base_plan}""")
+                                
+                                if hasattr(st.session_state, 'records_df') and not st.session_state.records_df.empty:
+                                    st.subheader("📋 Previous Requests")
+                                    st.dataframe(st.session_state.records_df)
+                            else:
+                                st.error("❌ Request failed: No result returned")
                                 
                         except Exception as e:
-                            st.error(f"Request failed: {e}")
+                            progress_placeholder.empty()
+                            st.error(f"❌ Request failed: {str(e)}")
+                            
+                            # Log error
+                            if 'error_log' not in st.session_state:
+                                st.session_state.error_log = []
                             st.session_state.error_log.append(f"{datetime.datetime.now()}: Request error: {e}")
-                            st.session_state.spinner_active = False
+                        
+                        finally:
+                            # Reset the flag after a short delay to allow for another submission
+                            import time
+                            time.sleep(1)
+                            st.session_state.form_submitted = False
 
         
 
@@ -908,5 +934,6 @@ if st.session_state.app_state == "scraping":
         with st.expander("Error Log", expanded=False):
             for log in st.session_state.error_log[-10:]:
                 st.write(log)
+
 
 

@@ -76,14 +76,24 @@ def save_records(df):
         st.session_state.error_log.append(f"{datetime.datetime.now()}: Error saving records: {e}")
 
 def send_request_email(name, client_email, bot_name, plan):
-    """Send license request email to admin."""
+    """Send license request email to admin with enhanced retry and error handling."""
     admin_email = os.getenv("ADMIN_EMAIL", "umisoftbotnotifier@gmail.com")
     smtp_user = os.getenv("SMTP_USER", "umisoftbotnotifier@gmail.com")
-    smtp_pass = os.getenv("SMTP_PASS", "ylor vkis zarh mokt")
-    max_retries = 2
-    retry_count = 0
-    while retry_count < max_retries:
+    smtp_pass = os.getenv("SMTP_PASS")
+    smtp_server = "smtp.gmail.com"
+    smtp_port = 587
+    max_retries = 3
+    base_delay = 2  # Base delay in seconds for exponential backoff
+
+    # Validate environment variables
+    if not smtp_pass:
+        error_msg = "SMTP_PASS environment variable is not set."
+        st.session_state.error_log.append(f"{datetime.datetime.now()}: {error_msg}")
+        return False
+
+    for attempt in range(max_retries):
         try:
+            # Create email message
             msg = MIMEMultipart()
             msg['From'] = smtp_user
             msg['To'] = admin_email
@@ -93,47 +103,64 @@ def send_request_email(name, client_email, bot_name, plan):
             <html>
             <head>
                 <style>
-                    body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333333; }}
-                    .container {{ max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 10px; box-shadow: 0 0 10px rgba(0, 0, 0, 0.1); }}
-                    .header {{ background-color: #f7f7f7; padding: 10px 20px; border-bottom: 1px solid #e0e0e0; text-align: center; }}
-                    .header h1 {{ margin: 0; font-size: 24px; color: #000000; }}
+                    body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
+                    .container {{ max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 10px; }}
+                    .header {{ background-color: #f7f7f7; padding: 10px; text-align: center; }}
+                    .header h1 {{ margin: 0; font-size: 24px; }}
                     .content {{ padding: 20px; }}
-                    .content p {{ margin: 0; }}
-                    .footer {{ text-align: center; margin-top: 20px; }}
-                    .footer p {{ font-size: 12px; color: #888888; }}
+                    .footer {{ text-align: center; margin-top: 20px; font-size: 12px; color: #888; }}
                 </style>
             </head>
             <body>
                 <div class='container'>
                     <div class='header'>
-                        <h1>New Key Request</h1>
+                        <h1>New License Request</h1>
                     </div>
                     <div class='content'>
-                        <p><strong>Name:</strong> {name}</p><br>
-                        <p><strong>Client Email:</strong> <a href='mailto:{client_email}'>{client_email}</a></p><br>
-                        <p><strong>Bot Name:</strong> {bot_name}</p><br>
+                        <p><strong>Name:</strong> {name}</p>
+                        <p><strong>Email:</strong> {client_email}</p>
+                        <p><strong>Bot Name:</strong> {bot_name}</p>
                         <p><strong>Plan:</strong> {plan}</p>
                     </div>
                     <div class='footer'>
-                        <p>Thank you for using our bot service. Please process this request.</p>
+                        <p>Please process this license request.</p>
                     </div>
                 </div>
             </body>
             </html>"""
             msg.attach(MIMEText(body, 'html'))
 
-            with smtplib.SMTP('smtp.gmail.com', 587, timeout=5) as server:
+            # Initialize SMTP connection
+            with smtplib.SMTP(smtp_server, smtp_port, timeout=10) as server:
                 server.starttls()
                 server.login(smtp_user, smtp_pass)
                 server.send_message(msg)
+            st.session_state.error_log.append(f"{datetime.datetime.now()}: Email sent successfully to {admin_email} for {client_email}")
             return True
-        except smtplib.SMTPServerDisconnected:
-            retry_count += 1
-            time.sleep(1)
-        except Exception as e:
-            st.session_state.error_log.append(f"{datetime.datetime.now()}: Email send error: {e}")
+
+        except smtplib.SMTPAuthenticationError as e:
+            error_msg = f"SMTP Authentication Error: {e}. Verify SMTP_USER and SMTP_PASS."
+            st.session_state.error_log.append(f"{datetime.datetime.now()}: {error_msg}")
             return False
-    st.session_state.error_log.append(f"{datetime.datetime.now()}: Email send failed after {max_retries} retries")
+        except smtplib.SMTPConnectError as e:
+            error_msg = f"SMTP Connect Error: {e}. Retrying... ({attempt + 1}/{max_retries})"
+            st.session_state.error_log.append(f"{datetime.datetime.now()}: {error_msg}")
+            if attempt < max_retries - 1:
+                time.sleep(base_delay * (2 ** attempt))  # Exponential backoff
+            continue
+        except smtplib.SMTPException as e:
+            error_msg = f"SMTP Error: {e}. Retrying... ({attempt + 1}/{max_retries})"
+            st.session_state.error_log.append(f"{datetime.datetime.now()}: {error_msg}")
+            if attempt < max_retries - 1:
+                time.sleep(base_delay * (2 ** attempt))
+            continue
+        except Exception as e:
+            error_msg = f"Unexpected error sending email: {e}"
+            st.session_state.error_log.append(f"{datetime.datetime.now()}: {error_msg}")
+            return False
+
+    error_msg = f"Failed to send email after {max_retries} retries."
+    st.session_state.error_log.append(f"{datetime.datetime.now()}: {error_msg}")
     return False
 
 class FirebaseFunctions:
@@ -575,45 +602,8 @@ if st.session_state.app_state == "auth":
                             if not doc_id:
                                 st.error("Failed to save request to database. Please try again.")
                                 st.stop()
-                            # Send email to admin with enhanced error handling
-                            st.session_state.error_log.append(f"{datetime.datetime.now()}: Attempting to send email for {email}")
-                            try:
-                                with smtplib.SMTP('smtp.gmail.com', 587, timeout=15) as server:
-                                    server.starttls()
-                                    server.login(os.getenv("SMTP_USER", "umisoftbotnotifier@gmail.com"), os.getenv("SMTP_PASS", "ylor vkis zarh mokt"))
-                                    # Test email to verify connection
-                                    test_msg = MIMEMultipart()
-                                    test_msg['From'] = os.getenv("SMTP_USER", "umisoftbotnotifier@gmail.com")
-                                    test_msg['To'] = os.getenv("ADMIN_EMAIL", "umisoftbotnotifier@gmail.com")
-                                    test_msg['Subject'] = "Test Email"
-                                    test_msg.attach(MIMEText("This is a test email to verify SMTP settings.", 'plain'))
-                                    server.send_message(test_msg)
-                                    st.session_state.error_log.append(f"{datetime.datetime.now()}: SMTP test email sent successfully for {email}")
-                                    # Send actual request email
-                                    msg = MIMEMultipart()
-                                    msg['From'] = os.getenv("SMTP_USER", "umisoftbotnotifier@gmail.com")
-                                    msg['To'] = os.getenv("ADMIN_EMAIL", "umisoftbotnotifier@gmail.com")
-                                    msg['Subject'] = "New Client License Request"
-                                    body = f"""
-                                    <html>
-                                    <head><style>body{{font-family:Arial,sans-serif;line-height:1.6;color:#333333;}} .container{{max-width:600px;margin:0 auto;padding:20px;border:1px solid #e0e0e0;border-radius:10px;}} .header{{background-color:#f7f7f7;padding:10px 20px;border-bottom:1px solid #e0e0e0;text-align:center;}} .header h1{{margin:0;font-size:24px;color:#000000;}} .content{{padding:20px;}} .content p{{margin:0;}} .footer{{text-align:center;margin-top:20px;}} .footer p{{font-size:12px;color:#888888;}}</style></head>
-                                    <body><div class='container'><div class='header'><h1>New Key Request</h1></div><div class='content'><p><strong>Name:</strong> {full_name}</p><br><p><strong>Client Email:</strong> <a href='mailto:{email}'>{email}</a></p><br><p><strong>Bot Name:</strong> Walmart Scraper</p><br><p><strong>Plan:</strong> {base_plan}</p></div><div class='footer'><p>Thank you for using our bot service. Please process this request.</p></div></div></body></html>"""
-                                    msg.attach(MIMEText(body, 'html'))
-                                    server.send_message(msg)
-                                email_sent = True
-                                st.session_state.error_log.append(f"{datetime.datetime.now()}: Request email sent successfully for {email}")
-                            except smtplib.SMTPAuthenticationError as e:
-                                st.session_state.error_log.append(f"{datetime.datetime.now()}: SMTP Authentication Error: {e}. Check SMTP_USER and SMTP_PASS environment variables.")
-                                email_sent = False
-                            except smtplib.SMTPConnectError as e:
-                                st.session_state.error_log.append(f"{datetime.datetime.now()}: SMTP Connect Error: {e}. Check internet connection or SMTP server.")
-                                email_sent = False
-                            except smtplib.SMTPException as e:
-                                st.session_state.error_log.append(f"{datetime.datetime.now()}: SMTP Exception: {e}")
-                                email_sent = False
-                            except Exception as e:
-                                st.session_state.error_log.append(f"{datetime.datetime.now()}: Unexpected email error: {e}")
-                                email_sent = False
+                            # Send email to admin
+                            email_sent = send_request_email(full_name, email, "Walmart Scraper", base_plan)
                             if not email_sent:
                                 st.error("Failed to send request email. Please try again or contact support.")
                                 FirebaseFunctions._firestore_db.collection("licenses").document(doc_id).delete()
@@ -945,5 +935,3 @@ if st.session_state.app_state == "scraping":
         with st.expander("Error Log", expanded=False):
             for log in st.session_state.error_log[-10:]:
                 st.write(log)
-
-

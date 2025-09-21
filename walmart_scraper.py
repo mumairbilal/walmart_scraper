@@ -4,6 +4,7 @@ import time
 import string
 import random
 import hashlib
+import uuid
 import streamlit as st
 import pandas as pd
 from firecrawl import Firecrawl
@@ -23,20 +24,38 @@ PLAN_LIMITS = {
     "Enterprise": {"daily_limit": 5000, "valid_days": 365}
 }
 
-LOCAL_LICENSE_FILE = ".walmart_scraper_license"
-LOCAL_RECORDS_FILE = "records.csv"
+LOCAL_LICENSE_FILE = os.path.expanduser("~/.walmart_scraper_license")
+LOCAL_RECORDS_FILE = os.path.expanduser("~/.walmart_scraper_records.csv")
 LOCAL_DEVICE_LOCK_FILE = os.path.expanduser("~/.walmart_scraper_device_lock")
+LOCAL_DEVICE_ID_FILE = os.path.expanduser("~/.walmart_scraper_device_id")
 
 def hide_file_on_windows(file_path):
     """Hide the file on Windows using ctypes."""
     try:
-        import ctypes
         FILE_ATTRIBUTE_HIDDEN = 0x02
         ret = ctypes.windll.kernel32.SetFileAttributesW(file_path, FILE_ATTRIBUTE_HIDDEN)
         if ret == 0:
             raise OSError("Failed to hide file on Windows.")
-    except ImportError:
-        pass  # Not on Windows, ignore
+    except Exception as e:
+        st.session_state.error_log.append(f"{datetime.datetime.now()}: Error hiding file: {e}")
+
+def get_device_id():
+    """Get or generate a unique device ID and store it locally."""
+    try:
+        if os.path.exists(LOCAL_DEVICE_ID_FILE):
+            with open(LOCAL_DEVICE_ID_FILE, "r") as f:
+                return f.read().strip()
+        else:
+            device_id = str(uuid.uuid4())
+            os.makedirs(os.path.dirname(LOCAL_DEVICE_ID_FILE), exist_ok=True)
+            with open(LOCAL_DEVICE_ID_FILE, "w") as f:
+                f.write(device_id)
+            if os.name == 'nt':
+                hide_file_on_windows(LOCAL_DEVICE_ID_FILE)
+            return device_id
+    except Exception as e:
+        st.session_state.error_log.append(f"{datetime.datetime.now()}: Error generating device ID: {e}")
+        return None
 
 def bind_license_to_device(license_key):
     """Bind the license key to this device by creating a hidden lock file."""
@@ -45,10 +64,8 @@ def bind_license_to_device(license_key):
         os.makedirs(os.path.dirname(LOCAL_DEVICE_LOCK_FILE), exist_ok=True)
         with open(LOCAL_DEVICE_LOCK_FILE, "w") as f:
             f.write(hashed_key)
-        # Hide the file on Windows
         if os.name == 'nt':
             hide_file_on_windows(LOCAL_DEVICE_LOCK_FILE)
-        # On Unix-like, the leading '.' makes it hidden
         return True
     except Exception as e:
         st.session_state.error_log.append(f"{datetime.datetime.now()}: Error binding license to device: {e}")
@@ -56,28 +73,35 @@ def bind_license_to_device(license_key):
 
 def check_device_binding(license_key):
     """Check if the license key is bound to this device."""
-    if os.path.exists(LOCAL_DEVICE_LOCK_FILE):
-        with open(LOCAL_DEVICE_LOCK_FILE, "r") as f:
-            stored_hash = f.read().strip()
-        hashed_key = hashlib.sha256(license_key.encode()).hexdigest()
-        return stored_hash == hashed_key
-    return False
+    try:
+        if os.path.exists(LOCAL_DEVICE_LOCK_FILE):
+            with open(LOCAL_DEVICE_LOCK_FILE, "r") as f:
+                stored_hash = f.read().strip()
+            hashed_key = hashlib.sha256(license_key.encode()).hexdigest()
+            return stored_hash == hashed_key
+        return False
+    except Exception as e:
+        st.session_state.error_log.append(f"{datetime.datetime.now()}: Error checking device binding: {e}")
+        return False
 
 def load_records():
     """Load registration records from local CSV."""
-    if os.path.exists(LOCAL_RECORDS_FILE):
-        try:
+    try:
+        if os.path.exists(LOCAL_RECORDS_FILE):
             df = pd.read_csv(LOCAL_RECORDS_FILE)
             return df
-        except Exception as e:
-            st.session_state.error_log.append(f"{datetime.datetime.now()}: Error loading records: {e}")
-            return pd.DataFrame(columns=["Bot Name", "Sender Name", "Email", "Time", "Date", "Request Status"])
-    return pd.DataFrame(columns=["Bot Name", "Sender Name", "Email", "Time", "Date", "Request Status"])
+        return pd.DataFrame(columns=["Bot Name", "Sender Name", "Email", "Time", "Date", "Request Status"])
+    except Exception as e:
+        st.session_state.error_log.append(f"{datetime.datetime.now()}: Error loading records: {e}")
+        return pd.DataFrame(columns=["Bot Name", "Sender Name", "Email", "Time", "Date", "Request Status"])
 
 def save_records(df):
     """Save registration records to local CSV."""
     try:
+        os.makedirs(os.path.dirname(LOCAL_RECORDS_FILE), exist_ok=True)
         df.to_csv(LOCAL_RECORDS_FILE, index=False)
+        if os.name == 'nt':
+            hide_file_on_windows(LOCAL_RECORDS_FILE)
     except Exception as e:
         st.session_state.error_log.append(f"{datetime.datetime.now()}: Error saving records: {e}")
 
@@ -237,13 +261,16 @@ class FirebaseFunctions:
             return False
     
     @staticmethod
-    def is_client_eligible(client_data, expected_bot_name, expected_valid_date):
+    def is_client_eligible(client_data, expected_bot_name, expected_valid_date, current_device_id):
         if client_data is None:
-            return False
+            return False, "Client data not found."
         if str(client_data.get("ToolName", "")) != str(expected_bot_name):
-            return False
+            return False, "Invalid bot name."
         if str(client_data.get("AccessStatus", "")) != "ON":
-            return False
+            return False, "Access is not active."
+        stored_device_id = client_data.get("DeviceID", "")
+        if stored_device_id and stored_device_id != current_device_id:
+            return False, "License key is already in use on another device."
         try:
             date_string = str(client_data.get("ValidUntil", ""))
             date_formats = ["%d-%b-%y", "%Y-%m-%d", "%d-%m-%Y"]
@@ -255,13 +282,13 @@ class FirebaseFunctions:
                 except ValueError:
                     continue
             if valid_date is None or valid_date < expected_valid_date:
-                return False
+                return False, "License has expired."
         except Exception as e:
             if 'error_log' in st.session_state:
                 st.session_state.error_log.append(f"{datetime.datetime.now()}: Date validation error: {e}")
-            return False
-        return True
-    
+            return False, "Invalid license date."
+        return True, "Eligible"
+
     @staticmethod
     def add_request(client_data):
         try:
@@ -346,19 +373,38 @@ class FirebaseFunctions:
     def generate_license_key(length=20):
         chars = string.ascii_uppercase + string.digits
         return ''.join(random.choice(chars) for _ in range(length))
+    
+    @staticmethod
+    def bind_license_to_device_in_firebase(license_key, device_id):
+        try:
+            if FirebaseFunctions._firestore_db is None:
+                FirebaseFunctions.initialize_firebase()
+            clients_ref = FirebaseFunctions._firestore_db.collection("licenses")
+            query = clients_ref.where("LicenseKey", "==", license_key)
+            docs = list(query.stream())
+            if len(docs) > 0:
+                doc_ref = clients_ref.document(docs[0].id)
+                doc_ref.update({"DeviceID": device_id})
+                return True
+            return False
+        except Exception as e:
+            if 'error_log' in st.session_state:
+                st.session_state.error_log.append(f"{datetime.datetime.now()}: Error binding license to device in Firebase: {e}")
+            return False
 
 def check_license_eligibility(license_key, bot_name):
     try:
         expected_valid_date = datetime.datetime.now()
+        current_device_id = get_device_id()
+        if not current_device_id:
+            return False, None, "Failed to generate device ID."
         client_data = FirebaseFunctions.get_client_data_by_license_key(license_key)
-        if not client_data:
-            return False, None
-        is_eligible = FirebaseFunctions.is_client_eligible(client_data, bot_name, expected_valid_date)
-        return is_eligible, client_data
+        is_eligible, message = FirebaseFunctions.is_client_eligible(client_data, bot_name, expected_valid_date, current_device_id)
+        return is_eligible, client_data, message
     except Exception as e:
         if 'error_log' in st.session_state:
             st.session_state.error_log.append(f"{datetime.datetime.now()}: License check error: {e}")
-        return False, None
+        return False, None, f"License check error: {e}"
 
 def should_reset_daily_count(client_data):
     last_validated = client_data.get("LastValidated", "")
@@ -436,35 +482,14 @@ records_df = load_records()
 # Auto-login with saved license key
 if st.session_state.app_state == "auth" and st.session_state.user_data is None:
     if os.path.exists(LOCAL_LICENSE_FILE):
-        with open(LOCAL_LICENSE_FILE, "r") as f:
-            saved_key = f.read().strip()
-        if saved_key:
-            with st.spinner("Auto-validating saved license..."):
-                try:
-                    is_eligible, client_data = check_license_eligibility(saved_key, "walmart_scraper")
+        try:
+            with open(LOCAL_LICENSE_FILE, "r") as f:
+                saved_key = f.read().strip()
+            if saved_key:
+                with st.spinner("Auto-validating saved license..."):
+                    is_eligible, client_data, message = check_license_eligibility(saved_key, "walmart_scraper")
                     if is_eligible:
-                        if not check_device_binding(saved_key):
-                            if bind_license_to_device(saved_key):
-                                st.session_state.user_data = client_data
-                                st.session_state.license_valid = True
-                                st.session_state.app_state = "scraping"
-                                st.session_state.firecrawl_api_key = client_data.get("FirecrawlApiKey", "")
-                                plan = client_data.get("Plan", "Free").lower()
-                                if any(word in plan for word in ["basic", "premium", "enterprise"]):
-                                    st.session_state.user_tier = "premium"
-                                else:
-                                    st.session_state.user_tier = "free"
-                                st.session_state.daily_urls_used = client_data.get("DailyUrlCount", 0)
-                                st.session_state.local_scraped_count = 0
-                                st.session_state.pending_quota_updates = []
-                                if should_reset_daily_count(client_data):
-                                    FirebaseFunctions.reset_daily_url_count(saved_key)
-                                    st.session_state.daily_urls_used = 0
-                                    st.session_state.local_scraped_count = 0
-                                st.rerun()
-                            else:
-                                st.error("Failed to bind license to this device. Contact support.")
-                        else:
+                        if check_device_binding(saved_key):
                             st.session_state.user_data = client_data
                             st.session_state.license_valid = True
                             st.session_state.app_state = "scraping"
@@ -482,10 +507,21 @@ if st.session_state.app_state == "auth" and st.session_state.user_data is None:
                                 st.session_state.daily_urls_used = 0
                                 st.session_state.local_scraped_count = 0
                             st.rerun()
+                        else:
+                            st.error("License key is not bound to this device. Please log in manually.")
+                            os.remove(LOCAL_LICENSE_FILE)
                     else:
-                        os.remove(LOCAL_LICENSE_FILE)
-                except Exception as e:
-                    st.session_state.error_log.append(f"{datetime.datetime.now()}: Auto-login error: {e}")
+                        st.error(f"Auto-login failed: {message}")
+                        if os.path.exists(LOCAL_LICENSE_FILE):
+                            os.remove(LOCAL_LICENSE_FILE)
+                        if os.path.exists(LOCAL_DEVICE_LOCK_FILE):
+                            os.remove(LOCAL_DEVICE_LOCK_FILE)
+        except Exception as e:
+            st.session_state.error_log.append(f"{datetime.datetime.now()}: Auto-login error: {e}")
+            if os.path.exists(LOCAL_LICENSE_FILE):
+                os.remove(LOCAL_LICENSE_FILE)
+            if os.path.exists(LOCAL_DEVICE_LOCK_FILE):
+                os.remove(LOCAL_DEVICE_LOCK_FILE)
 
 # CSS
 st.markdown("""
@@ -915,12 +951,17 @@ if st.session_state.app_state == "auth":
                                 st.error(f"{message}")
                             else:
                                 # Save request in Firebase
+                                device_id = get_device_id()
+                                if not device_id:
+                                    st.error("Failed to generate device ID. Please try again.")
+                                    st.stop()
                                 client_data = {
                                     "ClientName": full_name,
                                     "ClientEmail": email,
                                     "Plan": base_plan,
                                     "ToolName": "walmart_scraper",
-                                    "FirecrawlApiKey": firecrawl_api_key
+                                    "FirecrawlApiKey": firecrawl_api_key,
+                                    "DeviceID": device_id
                                 }
                                 doc_id = FirebaseFunctions.add_request(client_data)
                                 if doc_id:
@@ -949,18 +990,14 @@ if st.session_state.app_state == "auth":
                                         st.session_state.error_log.append(f"{datetime.datetime.now()}: License request sent - Email: {email}, Bot: {bot_name}, Plan: {base_plan}")
                                     else:
                                         st.error("Failed to send request email. Please try again or contact support.")
-                                        # Delete Firebase entry to avoid orphaned requests
                                         FirebaseFunctions._firestore_db.collection("licenses").document(doc_id).delete()
-                                    # Stop spinner
                                     st.stop()
                                 else:
                                     st.error("Failed to save request. Please try again or contact support.")
-                                    # Stop spinner
                                     st.stop()
                         except Exception as e:
                             st.error(f"Request failed: {e}")
                             st.session_state.error_log.append(f"{datetime.datetime.now()}: Request error: {e}")
-                            # Stop spinner
                             st.stop()
         
         if not records_df.empty:
@@ -974,32 +1011,50 @@ if st.session_state.app_state == "auth":
         if st.button("Validate License"):
             if license_key:
                 with st.spinner("Validating license..."):
-                    is_eligible, client_data = check_license_eligibility(license_key, "walmart_scraper")
+                    is_eligible, client_data, message = check_license_eligibility(license_key, "walmart_scraper")
                     if is_eligible:
-                        if check_device_binding(license_key):
+                        try:
+                            if not check_device_binding(license_key):
+                                if not bind_license_to_device(license_key):
+                                    st.error("Failed to bind license to this device. Please try again.")
+                                    st.stop()
                             if dont_ask:
+                                os.makedirs(os.path.dirname(LOCAL_LICENSE_FILE), exist_ok=True)
                                 with open(LOCAL_LICENSE_FILE, "w") as f:
                                     f.write(license_key)
-                        st.session_state.user_data = client_data
-                        st.session_state.license_valid = True
-                        st.session_state.app_state = "scraping"
-                        st.session_state.firecrawl_api_key = client_data.get("FirecrawlApiKey", "")
-                        plan = client_data.get("Plan", "Free").lower()
-                        if any(word in plan for word in ["basic", "premium", "enterprise"]):
-                            st.session_state.user_tier = "premium"
-                        else:
-                            st.session_state.user_tier = "free"
-                        st.session_state.daily_urls_used = client_data.get("DailyUrlCount", 0)
-                        st.session_state.local_scraped_count = 0
-                        st.session_state.pending_quota_updates = []
-                        if should_reset_daily_count(client_data):
-                            FirebaseFunctions.reset_daily_url_count(license_key)
-                            st.session_state.daily_urls_used = 0
+                                if os.name == 'nt':
+                                    hide_file_on_windows(LOCAL_LICENSE_FILE)
+                            # Bind license to device in Firebase
+                            device_id = get_device_id()
+                            if not device_id:
+                                st.error("Failed to generate device ID. Please try again.")
+                                st.stop()
+                            if not FirebaseFunctions.bind_license_to_device_in_firebase(license_key, device_id):
+                                st.error("Failed to bind license to device in Firebase. Please try again.")
+                                st.stop()
+                            st.session_state.user_data = client_data
+                            st.session_state.license_valid = True
+                            st.session_state.app_state = "scraping"
+                            st.session_state.firecrawl_api_key = client_data.get("FirecrawlApiKey", "")
+                            plan = client_data.get("Plan", "Free").lower()
+                            if any(word in plan for word in ["basic", "premium", "enterprise"]):
+                                st.session_state.user_tier = "premium"
+                            else:
+                                st.session_state.user_tier = "free"
+                            st.session_state.daily_urls_used = client_data.get("DailyUrlCount", 0)
                             st.session_state.local_scraped_count = 0
-                        st.success("License validated successfully!")
-                        st.rerun()
+                            st.session_state.pending_quota_updates = []
+                            if should_reset_daily_count(client_data):
+                                FirebaseFunctions.reset_daily_url_count(license_key)
+                                st.session_state.daily_urls_used = 0
+                                st.session_state.local_scraped_count = 0
+                            st.success("License validated successfully!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Login failed: {e}")
+                            st.session_state.error_log.append(f"{datetime.datetime.now()}: Login error: {e}")
                     else:
-                        st.error("Invalid or expired license key. Contact support if you believe this is an error.")
+                        st.error(f"Login failed: {message}")
             else:
                 st.error("Please enter your license key.")
     
@@ -1048,10 +1103,16 @@ if st.session_state.app_state == "scraping":
         """)
     
     if st.sidebar.button("Logout"):
-        if os.path.exists(LOCAL_LICENSE_FILE):
-            os.remove(LOCAL_LICENSE_FILE)
-        if os.path.exists(LOCAL_DEVICE_LOCK_FILE):
-            os.remove(LOCAL_DEVICE_LOCK_FILE)
+        try:
+            if os.path.exists(LOCAL_LICENSE_FILE):
+                os.remove(LOCAL_LICENSE_FILE)
+            if os.path.exists(LOCAL_DEVICE_LOCK_FILE):
+                os.remove(LOCAL_DEVICE_LOCK_FILE)
+            # Optionally clear DeviceID in Firebase to allow re-binding
+            doc_ref = FirebaseFunctions._firestore_db.collection("licenses").document(st.session_state.user_data["id"])
+            doc_ref.update({"DeviceID": ""})
+        except Exception as e:
+            st.session_state.error_log.append(f"{datetime.datetime.now()}: Logout error: {e}")
         st.session_state.app_state = "auth"
         st.session_state.user_data = None
         st.session_state.license_valid = False

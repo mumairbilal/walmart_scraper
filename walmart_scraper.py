@@ -1077,7 +1077,7 @@ if st.session_state.app_state == "scraping":
     # Page Config
     image_path = "icon2.png"
     try:
-        st.set_page_config(page_title="Walmart Product Scraper Powered by Umisoft",page_icon="logo.png", initial_sidebar_state="expanded")
+        st.set_page_config(page_title="Walmart Product Scraper Powered by Umisoft",page_icon="icon.png", initial_sidebar_state="expanded")
     except:
         pass
         
@@ -1361,3 +1361,4 @@ if st.session_state.app_state == "scraping":
         Contact: <a href="mailto:support@umisoft.com" style="text-decoration: none;">support@umisoft.com</a> | © 2025 Umisoft Ltd. | Version 2.0
     </div>
     """, unsafe_allow_html=True)
+

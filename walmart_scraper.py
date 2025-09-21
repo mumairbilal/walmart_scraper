@@ -843,7 +843,7 @@ if st.session_state.app_state == "auth":
 with tab1:
     st.subheader("Request License Key")
 
-    # Load persisted records into session state once
+    # Load persisted records once
     if "records_df" not in st.session_state:
         st.session_state.records_df = load_records()
 
@@ -853,13 +853,13 @@ with tab1:
             full_name = st.text_input("Full Name", placeholder="John Doe")
             email = st.text_input("Email Address", placeholder="john@example.com")
             firecrawl_api_key = st.text_input("Firecrawl API Key", placeholder="fc-...", type="password")
-            bot_name = "Walmart Scraper"  # Hardcode bot name
+            bot_name = "Walmart Scraper"
             selected_plan = st.selectbox("Select Plan", [
                 "Free Plan - 50 URLs/Day (7 Days)",
                 "Basic Plan - 500 URLs/Day (1 Month)",
                 "Premium Plan - 2,500 URLs/Day (3 Months)",
                 "Enterprise Plan - 5,000 URLs/Day (1 Year)"
-            ], help="Choose your subscription plan")
+            ])
             base_plan = selected_plan.split(" - ")[0].replace(" Plan", "")
         with col2:
             registration_date = datetime.datetime.now().strftime("%Y-%m-%d")
@@ -869,13 +869,11 @@ with tab1:
         submitted = st.form_submit_button("Send Request")
 
         if submitted:
-            # Basic validation
             if not all([full_name, email, firecrawl_api_key]):
                 st.error("Please fill in all required fields including Firecrawl API Key.")
             elif not agree_terms:
                 st.error("You must agree to the Terms of Service.")
             else:
-                # Do the work (no spinner)
                 try:
                     # Validate request
                     is_valid, message = validate_new_request(email, base_plan)
@@ -894,81 +892,47 @@ with tab1:
                                 "ToolName": bot_name,
                                 "FirecrawlApiKey": firecrawl_api_key,
                                 "DeviceID": device_id,
-                                "Time": datetime.datetime.now().strftime("%I:%M %p"),
-                                "Date": datetime.datetime.now().strftime("%d-%m-%Y")
                             }
                             doc_id = FirebaseFunctions.add_request(client_data)
                             if not doc_id:
                                 st.error("Failed to save request to database. Please try again.")
                             else:
-                                # Send email (if this fails you can optionally delete the doc)
-                                email_sent = send_request_email(full_name, email, bot_name, base_plan)
-                                if not email_sent:
-                                    st.error("Failed to send request email. Please contact support.")
-                                # Update local session dataframe and persist
+                                send_request_email(full_name, email, bot_name, base_plan)
+
+                                # Update local dataframe
                                 new_record = pd.DataFrame([{
                                     "Bot Name": bot_name,
                                     "Sender Name": full_name,
                                     "Email": email,
-                                    "Time": client_data["Time"],
-                                    "Date": client_data["Date"],
+                                    "Time": datetime.datetime.now().strftime("%I:%M %p"),
+                                    "Date": datetime.datetime.now().strftime("%d-%m-%Y"),
                                     "Request Status": "Sent"
                                 }])
                                 st.session_state.records_df = pd.concat(
                                     [st.session_state.records_df, new_record],
                                     ignore_index=True
                                 )
-                                # Persist (your save_records should write to disk or sync)
-                                try:
-                                    save_records(st.session_state.records_df)
-                                except Exception:
-                                    # if you don't use CSV, ignore or log
-                                    pass
+                                save_records(st.session_state.records_df)
 
-                                # Set success flag then rerun so the success message is shown reliably
-                                st.session_state.request_success = {
-                                    "full_name": full_name,
-                                    "email": email,
-                                    "bot": bot_name,
-                                    "plan": selected_plan,
-                                    "time": client_data["Time"],
-                                    "date": client_data["Date"]
-                                }
-                                st.rerun()
+                                # ✅ Direct success message (no rerun, no spinner)
+                                st.success(f"""
+                                Request sent successfully!
+                                - Name: {full_name}
+                                - Email: {email}
+                                - Bot: {bot_name}
+                                - Plan: {selected_plan}
+                                
+                                You will receive your license key via email after approval.
+                                """)
 
                 except Exception as e:
                     st.error(f"Request failed: {e}")
-                    # optional: log
-                    if "error_log" in st.session_state:
-                        st.session_state.error_log.append(f"{datetime.datetime.now()}: Request error: {e}")
 
-    # After rerun: show success message once
-    if "request_success" in st.session_state and st.session_state.request_success:
-        info = st.session_state.request_success
-        st.success(f"""
-        Request sent successfully!
-        - Name: {info['full_name']}
-        - Email: {info['email']}
-        - Bot: {info['bot']}
-        - Plan: {info['plan']}
-        - Time: {info['time']}
-        - Date: {info['date']}
-
-        You will receive your license key via email after approval.
-        """)
-        # optional logging
-        if "error_log" in st.session_state:
-            st.session_state.error_log.append(
-                f"{datetime.datetime.now()}: License request sent - Email: {info['email']}, Bot: {info['bot']}, Plan: {info['plan']}"
-            )
-        st.session_state.request_success = None  # clear flag
-
-    # Finally: show the dataframe (always from session_state)
+    # Show dataframe always
     if not st.session_state.records_df.empty:
         st.subheader("Previous Requests")
         st.dataframe(st.session_state.records_df)
-    else:
-        st.info("No requests yet.")
+
 
 
 
@@ -1267,6 +1231,7 @@ if st.session_state.app_state == "scraping":
         with st.expander("Error Log", expanded=False):
             for log in st.session_state.error_log[-10:]:
                 st.write(log)
+
 
 
 

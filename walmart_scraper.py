@@ -12,8 +12,6 @@ import json
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-import psutil
-import re
 
 # Plan limits configuration
 PLAN_LIMITS = {
@@ -24,47 +22,7 @@ PLAN_LIMITS = {
 }
 
 LOCAL_LICENSE_FILE = ".walmart_scraper_license"
-LOCAL_MACHINE_ID_FILE = ".system_setup_id"
 LOCAL_RECORDS_FILE = "records.csv"
-
-def get_mac_address():
-    """Retrieve the MAC address of the first enabled physical network adapter."""
-    def is_virtual(name: str) -> bool:
-        return bool(re.search(r'^(lo|loop|docker|veth|br-|virbr|vmnet|vbox|vmware|tun|tap|wg)', name, re.I))
-
-    candidates = []
-    for iface, addrs in psutil.net_if_addrs().items():
-        for addr in addrs:
-            if addr.family == psutil.AF_LINK and addr.address and addr.address != "00:00:00:00:00:00":
-                if not is_virtual(iface):
-                    candidates.append((iface.lower(), addr.address.replace(":", "").upper()))
-
-    # Prefer Ethernet > LAN > en* > Wi-Fi
-    for preferred in ["ethernet", "lan", "eth", "en", "enp"]:
-        for _, mac in candidates:
-            if mac:
-                return mac
-    for _, mac in candidates:
-        if mac:
-            return mac
-    return "UNKNOWN"
-
-def check_if_new_pc():
-    """Check if this is a new PC by comparing stored MAC address."""
-    current_mac = get_mac_address()
-    if os.path.exists(LOCAL_MACHINE_ID_FILE):
-        with open(LOCAL_MACHINE_ID_FILE, "r") as f:
-            stored_mac = f.read().strip()
-        return stored_mac == current_mac
-    return False
-
-def save_mac_address():
-    """Save the current MAC address to a local file."""
-    try:
-        with open(LOCAL_MACHINE_ID_FILE, "w") as f:
-            f.write(get_mac_address())
-    except Exception as e:
-        st.session_state.error_log.append(f"{datetime.datetime.now()}: Error saving MAC address: {e}")
 
 def load_records():
     """Load registration records from local CSV."""
@@ -74,8 +32,8 @@ def load_records():
             return df
         except Exception as e:
             st.session_state.error_log.append(f"{datetime.datetime.now()}: Error loading records: {e}")
-            return pd.DataFrame(columns=["Bot Name", "Sender Name", "Email", "Time", "Date", "MAC Address", "Request Status"])
-    return pd.DataFrame(columns=["Bot Name", "Sender Name", "Email", "Time", "Date", "MAC Address", "Request Status"])
+            return pd.DataFrame(columns=["Bot Name", "Sender Name", "Email", "Time", "Date", "Request Status"])
+    return pd.DataFrame(columns=["Bot Name", "Sender Name", "Email", "Time", "Date", "Request Status"])
 
 def save_records(df):
     """Save registration records to local CSV."""
@@ -84,7 +42,7 @@ def save_records(df):
     except Exception as e:
         st.session_state.error_log.append(f"{datetime.datetime.now()}: Error saving records: {e}")
 
-def send_request_email(name, client_email, bot_name, mac_address):
+def send_request_email(name, client_email, bot_name, plan):
     """Send license request email to admin."""
     admin_email = os.getenv("ADMIN_EMAIL", "umisoftbotnotifier@gmail.com")
     smtp_user = os.getenv("SMTP_USER", "umisoftbotnotifier@gmail.com")
@@ -96,7 +54,7 @@ def send_request_email(name, client_email, bot_name, mac_address):
             msg = MIMEMultipart()
             msg['From'] = smtp_user
             msg['To'] = admin_email
-            msg['Subject'] = "New Client"
+            msg['Subject'] = "New Client License Request"
 
             body = f"""
             <html>
@@ -151,10 +109,10 @@ def send_request_email(name, client_email, bot_name, mac_address):
                         <p><strong>Name:</strong> {name}</p><br>
                         <p><strong>Client Email:</strong> <a href='mailto:{client_email}'>{client_email}</a></p><br>
                         <p><strong>Bot Name:</strong> {bot_name}</p><br>
-                        <p><strong>MAC Address:</strong> {mac_address}</p>
+                        <p><strong>Plan:</strong> {plan}</p>
                     </div>
                     <div class='footer'>
-                        <p>Thank you for using our bot service. We will get back to you shortly.</p>
+                        <p>Thank you for using our bot service. Please process this request.</p>
                     </div>
                 </div>
             </body>
@@ -221,16 +179,17 @@ class FirebaseFunctions:
                 return client_data
             return None
         except Exception as e:
-            st.error(f"Get client by email error: {e}")
+            if 'error_log' in st.session_state:
+                st.session_state.error_log.append(f"{datetime.datetime.now()}: Get client by email error: {e}")
             return None
     
     @staticmethod
-    def has_existing_free_account(mac_address):
+    def has_existing_free_account(email):
         try:
             if FirebaseFunctions._firestore_db is None:
                 FirebaseFunctions.initialize_firebase()
             clients_ref = FirebaseFunctions._firestore_db.collection("licenses")
-            query = clients_ref.where("ClientMacAddress", "==", mac_address).where("Plan", "==", "Free")
+            query = clients_ref.where("ClientEmail", "==", email).where("Plan", "==", "Free")
             docs = list(query.stream())
             return len(docs) > 0
         except Exception as e:
@@ -239,7 +198,7 @@ class FirebaseFunctions:
             return False
     
     @staticmethod
-    def is_client_eligible(client_data, expected_bot_name, expected_valid_date, current_mac_address):
+    def is_client_eligible(client_data, expected_bot_name, expected_valid_date):
         if client_data is None:
             return False
         if str(client_data.get("ToolName", "")) != str(expected_bot_name):
@@ -259,19 +218,16 @@ class FirebaseFunctions:
             if valid_date is None or valid_date < expected_valid_date:
                 return False
         except Exception as e:
-            st.error(f"Date validation error: {e}")
-            return False
-        registered_mac = client_data.get("ClientMacAddress", "")
-        if registered_mac and current_mac_address and registered_mac != current_mac_address:
+            if 'error_log' in st.session_state:
+                st.session_state.error_log.append(f"{datetime.datetime.now()}: Date validation error: {e}")
             return False
         return True
     
     @staticmethod
-    def add_request(client_data, mac_address):
+    def add_request(client_data):
         try:
             if FirebaseFunctions._firestore_db is None:
                 FirebaseFunctions.initialize_firebase()
-            client_data["ClientMacAddress"] = mac_address
             client_data["RegistrationDate"] = datetime.datetime.now().strftime("%Y-%m-%d")
             client_data["AccessStatus"] = "PENDING"
             clients_ref = FirebaseFunctions._firestore_db.collection("licenses")
@@ -279,7 +235,8 @@ class FirebaseFunctions:
             new_doc_ref.set(client_data)
             return new_doc_ref.id
         except Exception as e:
-            st.error(f"Add request error: {e}")
+            if 'error_log' in st.session_state:
+                st.session_state.error_log.append(f"{datetime.datetime.now()}: Add request error: {e}")
             return None
     
     @staticmethod
@@ -342,7 +299,8 @@ class FirebaseFunctions:
                 return True
             return False
         except Exception as e:
-            st.error(f"Reset count error: {e}")
+            if 'error_log' in st.session_state:
+                st.session_state.error_log.append(f"{datetime.datetime.now()}: Reset count error: {e}")
             return False
     
     @staticmethod
@@ -352,15 +310,15 @@ class FirebaseFunctions:
 
 def check_license_eligibility(license_key, bot_name):
     try:
-        current_mac_address = get_mac_address()
         expected_valid_date = datetime.datetime.now()
         client_data = FirebaseFunctions.get_client_data_by_license_key(license_key)
         if not client_data:
             return False, None
-        is_eligible = FirebaseFunctions.is_client_eligible(client_data, bot_name, expected_valid_date, current_mac_address)
+        is_eligible = FirebaseFunctions.is_client_eligible(client_data, bot_name, expected_valid_date)
         return is_eligible, client_data
     except Exception as e:
-        st.error(f"License check error: {e}")
+        if 'error_log' in st.session_state:
+            st.session_state.error_log.append(f"{datetime.datetime.now()}: License check error: {e}")
         return False, None
 
 def should_reset_daily_count(client_data):
@@ -373,12 +331,12 @@ def should_reset_daily_count(client_data):
     except ValueError:
         return True
 
-def validate_new_request(email, plan, mac_address):
+def validate_new_request(email, plan):
     existing_email = FirebaseFunctions.get_client_data_by_email(email)
     if existing_email:
         return False, "Email already exists. Use your existing account or contact support."
-    if mac_address and plan == "Free" and FirebaseFunctions.has_existing_free_account(mac_address):
-        return False, "You already have a free account registered on this device. Please use your existing account or upgrade to a paid plan."
+    if plan == "Free" and FirebaseFunctions.has_existing_free_account(email):
+        return False, "You already have a free account registered. Please use your existing account or upgrade to a paid plan."
     return True, "OK"
 
 # Initialize Firebase
@@ -435,7 +393,6 @@ if "rate_limit_delay" not in st.session_state:
 
 # Load records
 records_df = load_records()
-is_new_pc = check_if_new_pc()
 
 # Auto-login with saved license key
 if st.session_state.app_state == "auth" and st.session_state.user_data is None:
@@ -767,7 +724,7 @@ st.markdown("""
         div.stDownloadButton > button:hover {
             background-color: #000000 !important;
             color: #ffffff !important;
-            border-color: #000000 !important;
+            border-color: #ffffff !important;
         }
         div[data-testid="stFileUploaderDropzone"] button {
             background-color: #000000 !important;
@@ -861,7 +818,6 @@ if st.session_state.app_state == "auth":
     
     with tab1:
         st.subheader("Request License Key")
-        mac_address = get_mac_address()
         records_df = load_records()
         with st.form("request_form"):
             col1, col2 = st.columns([3, 2])
@@ -880,7 +836,6 @@ if st.session_state.app_state == "auth":
             with col2:
                 registration_date = datetime.datetime.now().strftime("%Y-%m-%d")
                 st.text_input("Registration Date", value=registration_date, disabled=True)
-                st.text_input("MAC Address", value=mac_address, disabled=True, help="Unique identifier for this device")
             agree_terms = st.checkbox("I agree to the Terms of Service and Privacy Policy")
             submitted = st.form_submit_button("Send Request")
             if submitted:
@@ -892,26 +847,24 @@ if st.session_state.app_state == "auth":
                     elif not agree_terms:
                         st.error("You must agree to the Terms of Service.")
                     else:
-                        is_valid, message = validate_new_request(email, base_plan, mac_address)
-                        if not is_valid:
-                            st.error(f"{message}")
-                        else:
-                            try:
+                        try:
+                            # Validate request
+                            is_valid, message = validate_new_request(email, base_plan)
+                            if not is_valid:
+                                st.error(f"{message}")
+                            else:
                                 # Save request in Firebase
                                 client_data = {
                                     "ClientName": full_name,
                                     "ClientEmail": email,
-                                    "ClientMacAddress": mac_address,
                                     "Plan": base_plan,
                                     "ToolName": "walmart_scraper",
                                     "FirecrawlApiKey": firecrawl_api_key
                                 }
-                                doc_id = FirebaseFunctions.add_request(client_data, mac_address)
+                                doc_id = FirebaseFunctions.add_request(client_data)
                                 if doc_id:
                                     # Send email to admin
-                                    if send_request_email(full_name, email, bot_name, mac_address):
-                                        # Save MAC address
-                                        save_mac_address()
+                                    if send_request_email(full_name, email, bot_name, base_plan):
                                         # Update local records
                                         new_record = pd.DataFrame([{
                                             "Bot Name": bot_name,
@@ -919,7 +872,6 @@ if st.session_state.app_state == "auth":
                                             "Email": email,
                                             "Time": datetime.datetime.now().strftime("%I:%M %p"),
                                             "Date": datetime.datetime.now().strftime("%d-%m-%Y"),
-                                            "MAC Address": mac_address,
                                             "Request Status": "Sent"
                                         }])
                                         records_df = pd.concat([records_df, new_record], ignore_index=True)
@@ -930,32 +882,27 @@ if st.session_state.app_state == "auth":
                                         - Email: {email}
                                         - Bot: {bot_name}
                                         - Plan: {selected_plan}
-                                        - MAC Address: {mac_address}
                                         
                                         You will receive your license key via email after approval.
                                         """)
-                                        st.session_state.error_log.append(f"{datetime.datetime.now()}: License request sent - Email: {email}, Bot: {bot_name}, Plan: {base_plan}, MAC: {mac_address}")
+                                        st.session_state.error_log.append(f"{datetime.datetime.now()}: License request sent - Email: {email}, Bot: {bot_name}, Plan: {base_plan}")
                                     else:
                                         st.error("Failed to send request email. Please try again or contact support.")
                                         # Delete Firebase entry to avoid orphaned requests
                                         FirebaseFunctions._firestore_db.collection("licenses").document(doc_id).delete()
                                 else:
                                     st.error("Failed to save request. Please try again or contact support.")
-                            except Exception as e:
-                                st.error(f"Request failed: {e}")
-                                st.session_state.error_log.append(f"{datetime.datetime.now()}: Request error: {e}")
+                        except Exception as e:
+                            st.error(f"Request failed: {e}")
+                            st.session_state.error_log.append(f"{datetime.datetime.now()}: Request error: {e}")
         
-        if is_new_pc and not records_df.empty:
+        if not records_df.empty:
             st.subheader("Previous Requests")
             st.dataframe(records_df)
-        elif not is_new_pc:
-            st.info("This is a new device. Previous request history is not available.")
     
     with tab2:
         st.subheader("Login to Your Account")
         license_key = st.text_input("License Key", type="password", placeholder="Enter your license key")
-        current_mac_address = get_mac_address()
-        st.text_input("MAC Address", value=current_mac_address, disabled=True, help="Used for security")
         dont_ask = st.checkbox("Don't ask again on this device")
         if st.button("Validate License"):
             if license_key:
@@ -984,7 +931,7 @@ if st.session_state.app_state == "auth":
                         st.success("License validated successfully!")
                         st.rerun()
                     else:
-                        st.error("Invalid license key or MAC address mismatch. Contact support if you believe this is an error.")
+                        st.error("Invalid or expired license key. Contact support if you believe this is an error.")
             else:
                 st.error("Please enter your license key.")
     
@@ -1029,8 +976,7 @@ if st.session_state.app_state == "scraping":
         **Valid Until:** {st.session_state.user_data.get('ValidUntil', 'N/A')}  
         **Credits Used:** {st.session_state.daily_urls_used} / {st.session_state.user_data.get('DailyUrlLimit', 5000)}  
         **Local Scraped Count:** {st.session_state.local_scraped_count}  
-        **Pending Quota Updates:** {len(st.session_state.pending_quota_updates)}  
-        **MAC Address:** {get_mac_address()}
+        **Pending Quota Updates:** {len(st.session_state.pending_quota_updates)}
         """)
     
     if st.sidebar.button("Logout"):

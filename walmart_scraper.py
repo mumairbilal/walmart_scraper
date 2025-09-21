@@ -23,19 +23,23 @@ PLAN_LIMITS = {
 LOCAL_LICENSE_FILE = ".walmart_scraper_license"
 
 def get_remote_ip() -> str:
-    """Get remote ip."""
+    """Get remote IP address with fallback."""
     try:
         ctx = get_script_run_ctx()
         if ctx is None:
+            st.session_state.error_log.append(f"{datetime.datetime.now()}: No Streamlit context available for IP detection")
             return None
-
         session_info = get_runtime()._session_mgr.get_session_info(ctx.session_id)
-        if session_info is None:
+        if session_info is None or session_info.request is None:
+            st.session_state.error_log.append(f"{datetime.datetime.now()}: No session info or request available for IP detection")
             return None
-        return session_info.request.remote_ip
+        remote_ip = session_info.request.remote_ip
+        if not remote_ip:
+            st.session_state.error_log.append(f"{datetime.datetime.now()}: Remote IP is empty")
+            return None
+        return remote_ip
     except Exception as e:
-        if 'error_log' in st.session_state:
-            st.session_state.error_log.append(f"{datetime.datetime.now()}: Get remote IP error: {e}")
+        st.session_state.error_log.append(f"{datetime.datetime.now()}: Get remote IP error: {e}")
         return None
 
 class FirebaseFunctions:
@@ -125,8 +129,9 @@ class FirebaseFunctions:
         except Exception as e:
             st.error(f"Date validation error: {e}")
             return False
+        # Only enforce IP check if ClientIP exists and current_ip is available
         registered_ip = client_data.get("ClientIP", "")
-        if registered_ip and registered_ip != current_ip:
+        if registered_ip and current_ip and registered_ip != current_ip:
             return False
         return True
     
@@ -223,8 +228,6 @@ class FirebaseFunctions:
 def check_license_eligibility(license_key, bot_name):
     try:
         current_ip = get_remote_ip()
-        if not current_ip:
-            return False, None
         expected_valid_date = datetime.datetime.now()
         client_data = FirebaseFunctions.get_client_data_by_license_key(license_key)
         if not client_data:
@@ -249,7 +252,7 @@ def validate_new_registration(email, plan, ip_address):
     existing_email = FirebaseFunctions.get_client_data_by_email(email)
     if existing_email:
         return False, "Email already exists. Login with existing key."
-    if plan == "Free" and FirebaseFunctions.has_existing_free_account(ip_address):
+    if ip_address and plan == "Free" and FirebaseFunctions.has_existing_free_account(ip_address):
         return False, "You already have a free account registered from this IP. Please use your existing account or upgrade to a paid plan."
     return True, "OK"
 
@@ -731,8 +734,7 @@ if st.session_state.app_state == "auth":
         st.subheader("Create Your Account")
         current_ip = get_remote_ip()
         if not current_ip:
-            st.error("Unable to detect your IP address. Please try again later.")
-            st.stop()
+            st.warning("Unable to detect your IP address. Registration will proceed without IP restriction, but some features may be limited.")
         with st.form("registration_form"):
             col1, col2 = st.columns([3, 2])
             with col1:
@@ -767,7 +769,7 @@ if st.session_state.app_state == "auth":
                                 client_data = {
                                     "ClientName": full_name,
                                     "ClientEmail": email,
-                                    "ClientIP": current_ip,
+                                    "ClientIP": current_ip if current_ip else "",
                                     "RegistrationDate": registration_date,
                                     "Plan": base_plan,
                                     "ToolName": "walmart_scraper",
@@ -792,9 +794,9 @@ if st.session_state.app_state == "auth":
                                     **Plan:** {selected_plan}  
                                     **License Key:** `{license_key}`
                                     
-                                    Important: Save your license key securely. This license is bound to your current IP address.
+                                    Important: Save your license key securely. This license is {'bound to your current IP address' if current_ip else 'not bound to an IP address due to detection issues'}.
                                     """)
-                                    st.session_state.error_log.append(f"{datetime.datetime.now()}: New account registered - Email: {email}, Plan: {base_plan}, IP: {current_ip}")
+                                    st.session_state.error_log.append(f"{datetime.datetime.now()}: New account registered - Email: {email}, Plan: {base_plan}, IP: {current_ip or 'None'}")
                                     st.rerun()
                                 else:
                                     st.error("Failed to create account. Please try again or contact support.")

@@ -849,7 +849,7 @@ if st.session_state.app_state == "auth":
                 full_name = st.text_input("Full Name", placeholder="John Doe")
                 email = st.text_input("Email Address", placeholder="john@example.com")
                 firecrawl_api_key = st.text_input("Firecrawl API Key", placeholder="fc-...", type="password")
-                bot_name = st.selectbox("Select Bot", ["Select", "Walmart Scraper"], help="Choose the bot to request a license for")
+                bot_name = "Walmart Scraper"  # Hardcode bot name
                 selected_plan = st.selectbox("Select Plan", [
                     "Free Plan - 50 URLs/Day (7 Days)",
                     "Basic Plan - 500 URLs/Day (1 Month)",
@@ -912,6 +912,18 @@ if st.session_state.app_state == "auth":
                             st.error(f"Request failed: {e}")
                             st.session_state.error_log.append(f"{datetime.datetime.now()}: Request error: {e}")
                             st.stop()
+                    # Display success message outside spinner
+                    st.success(f"""
+                    Request sent successfully!
+                    - Name: {full_name}
+                    - Email: {email}
+                    - Bot: Walmart Scraper
+                    - Plan: {selected_plan}
+                    
+                    You will receive your license key via email after approval.
+                    """)
+                    st.session_state.error_log.append(f"{datetime.datetime.now()}: License request sent - Email: {email}, Bot: Walmart Scraper, Plan: {base_plan}")
+                    st.stop()
                     # Display success message outside spinner
                     st.success(f"""
                     Request sent successfully!
@@ -1223,5 +1235,6 @@ if st.session_state.app_state == "scraping":
         with st.expander("Error Log", expanded=False):
             for log in st.session_state.error_log[-10:]:
                 st.write(log)
+
 
 

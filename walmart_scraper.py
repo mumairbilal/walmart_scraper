@@ -1,18 +1,21 @@
+import base64
 import datetime
 import os
 import time
-import string
-import random
 import uuid
+import string
+import json
+import random
 import streamlit as st
+import requests
 import pandas as pd
 from firecrawl import Firecrawl
 import firebase_admin
 from firebase_admin import credentials, firestore
-import json
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+import threading
 
 # Plan limits configuration
 PLAN_LIMITS = {
@@ -22,6 +25,7 @@ PLAN_LIMITS = {
     "Enterprise": {"daily_limit": 5000, "valid_days": 365}
 }
 
+LOCAL_LICENSE_FILE = ".walmart_scraper_license"
 LOCAL_RECORDS_FILE = "./walmart_scraper_records.csv"
 LOCAL_DEVICE_ID_FILE = os.path.expanduser("~/.walmart_scraper_device_id")
 
@@ -128,6 +132,9 @@ def send_request_email(name, client_email, bot_name, plan):
     st.session_state.error_log.append(f"{datetime.datetime.now()}: Email send failed after {max_retries} retries")
     return False
 
+# -------------------------------
+# Firebase License Functions
+# -------------------------------
 class FirebaseFunctions:
     _firestore_db = None
     
@@ -349,15 +356,12 @@ def validate_new_request(email, plan):
 
 def handle_form_submission(full_name, email, firecrawl_api_key, base_plan):
     if not all([full_name, email, firecrawl_api_key]):
-        st.error("Please fill in all required fields including Firecrawl API Key.")
         return False
     is_valid, message = validate_new_request(email, base_plan)
     if not is_valid:
-        st.error(f"{message}")
         return False
     device_id = get_device_id()
     if not device_id:
-        st.error("Failed to generate device ID. Please try again.")
         return False
     client_data = {
         "ClientName": full_name,
@@ -369,11 +373,9 @@ def handle_form_submission(full_name, email, firecrawl_api_key, base_plan):
     }
     doc_id = FirebaseFunctions.add_request(client_data)
     if not doc_id:
-        st.error("Failed to save request to database. Please try again.")
         return False
     email_sent = send_request_email(full_name, email, "Walmart Scraper", base_plan)
     if not email_sent:
-        st.error("Failed to send request email. Please try again or contact support.")
         FirebaseFunctions._firestore_db.collection("licenses").document(doc_id).delete()
         return False
     new_record = pd.DataFrame([{
@@ -402,7 +404,7 @@ except Exception as e:
     st.error(f"Firebase init error: {e}")
     st.stop()
 
-# App state
+# App state initialization
 if "app_state" not in st.session_state:
     st.session_state.app_state = "auth"
 if "user_data" not in st.session_state:
@@ -446,12 +448,37 @@ if "pending_quota_updates" not in st.session_state:
     st.session_state.pending_quota_updates = []
 if "rate_limit_delay" not in st.session_state:
     st.session_state.rate_limit_delay = 0.5
-if "request_processed" not in st.session_state:
-    st.session_state.request_processed = None
-
-# Load records into session state
 if "records_df" not in st.session_state:
     st.session_state.records_df = load_records()
+
+# Auto-login check
+if st.session_state.app_state == "auth" and st.session_state.user_data is None:
+    if os.path.exists(LOCAL_LICENSE_FILE):
+        with open(LOCAL_LICENSE_FILE, "r") as f:
+            saved_key = f.read().strip()
+        if saved_key:
+            with st.spinner("Auto-validating saved license..."):
+                is_eligible, client_data, message = check_license_eligibility(saved_key, "Walmart Scraper")
+                if is_eligible:
+                    st.session_state.user_data = client_data
+                    st.session_state.license_valid = True
+                    st.session_state.app_state = "scraping"
+                    st.session_state.firecrawl_api_key = client_data.get("FirecrawlApiKey", "")
+                    plan = client_data.get("Plan", "Free").lower()
+                    if any(word in plan for word in ["basic", "premium", "enterprise"]):
+                        st.session_state.user_tier = "premium"
+                    else:
+                        st.session_state.user_tier = "free"
+                    st.session_state.daily_urls_used = client_data.get("DailyUrlCount", 0)
+                    st.session_state.local_scraped_count = 0
+                    st.session_state.pending_quota_updates = []
+                    if should_reset_daily_count(client_data):
+                        FirebaseFunctions.reset_daily_url_count(saved_key)
+                        st.session_state.daily_urls_used = 0
+                        st.session_state.local_scraped_count = 0
+                    st.rerun()
+                else:
+                    st.warning("Saved license key is invalid or tied to a different device. Please re-enter your license key.")
 
 # CSS
 st.markdown("""
@@ -471,10 +498,10 @@ st.markdown("""
         border-radius: 8px; padding: 10px 20px; font-weight: bold; transition: background-color 0.3s, border-color 0.3s; border: 1px solid #000000 !important; min-height: 40px !important; white-space: nowrap !important; overflow: hidden !important; text-overflow: ellipsis !important;
     }
     div.stDownloadButton > button:hover { border: 1px solid #ffffff !important; }
-    div[data-testid="stFileUploaderDropzone"] button {
+    div.stFileUploaderDropzone button {
         border-radius: 8px; padding: 10px 20px; font-weight: bold; transition: background-color 0.3s, border-color 0.3s; border: 1px solid #000000 !important; min-height: 40px !important; white-space: nowrap !important; overflow: hidden !important; text-overflow: ellipsis !important;
     }
-    div[data-testid="stFileUploaderDropzone"] button:hover { border: 1px solid #ffffff !important; }
+    div.stFileUploaderDropzone button:hover { border: 1px solid #ffffff !important; }
     section[data-testid="stSidebar"] { padding: 20px; border-right: 1px solid #000000 !important; }
     div.stTabs [data-baseweb="tab"] {
         border-radius: 8px 8px 0 0; padding: 10px 20px; margin: 0 5px; border: 1px solid #000000 !important; border-bottom: none;
@@ -506,8 +533,8 @@ st.markdown("""
         div.stSelectbox > div > div > select { background-color: #1E1E1E !important; color: #ffffff !important; border-color: #ffffff !important; }
         div.stDownloadButton > button { background-color: #ffffff !important; color: #000000 !important; border-color: #ffffff !important; }
         div.stDownloadButton > button:hover { background-color: #000000 !important; color: #ffffff !important; border-color: #ffffff !important; }
-        div[data-testid="stFileUploaderDropzone"] button { background-color: #ffffff !important; color: #000000 !important; border-color: #ffffff !important; }
-        div[data-testid="stFileUploaderDropzone"] button:hover { background-color: #000000 !important; color: #ffffff !important; border-color: #ffffff !important; }
+        div.stFileUploaderDropzone button { background-color: #ffffff !important; color: #000000 !important; border-color: #ffffff !important; }
+        div.stFileUploaderDropzone button:hover { background-color: #000000 !important; color: #ffffff !important; border-color: #ffffff !important; }
         section[data-testid="stSidebar"] { background-color: #1E1E1E !important; border-right-color: #ffffff !important; }
         div.stTabs [data-baseweb="tab"] { background-color: #1E1E1E !important; color: #ffffff !important; border-color: #ffffff !important; }
         div.stTabs [data-baseweb="tab"]:hover { background-color: #333333 !important; }
@@ -534,8 +561,8 @@ st.markdown("""
         div.stSelectbox > div > div > select { background-color: #f8f8f8 !important; color: #000000 !important; border-color: #000000 !important; }
         div.stDownloadButton > button { background-color: #ffffff !important; color: #000000 !important; border-color: #000000 !important; }
         div.stDownloadButton > button:hover { background-color: #000000 !important; color: #ffffff !important; border-color: #000000 !important; }
-        div[data-testid="stFileUploaderDropzone"] button { background-color: #000000 !important; color: #ffffff !important; border-color: #000000 !important; }
-        div[data-testid="stFileUploaderDropzone"] button:hover { background-color: #ffffff !important; color: #000000 !important; border-color: #000000 !important; }
+        div.stFileUploaderDropzone button { background-color: #000000 !important; color: #ffffff !important; border-color: #000000 !important; }
+        div.stFileUploaderDropzone button:hover { background-color: #ffffff !important; color: #000000 !important; border-color: #000000 !important; }
         section[data-testid="stSidebar"] { background-color: #f8f8f8 !important; border-right-color: #000000 !important; }
         div.stTabs [data-baseweb="tab"] { background-color: #f8f8f8 !important; color: #000000 !important; border-color: #000000 !important; }
         div.stTabs [data-baseweb="tab"]:hover { background-color: #e0e0e0 !important; }
@@ -559,7 +586,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Auth Interface
+# Authentication Interface
 if st.session_state.app_state == "auth":
     st.title("Walmart Product Scraper")
     st.markdown("**Professional-grade data extraction for market research and competitive analysis.**")
@@ -593,7 +620,7 @@ if st.session_state.app_state == "auth":
                 if not agree_terms:
                     st.error("You must agree to the Terms of Service.")
                 else:
-                    # Simple flag to prevent double submission
+                    # Fire-and-forget form submission
                     submission_key = f"{full_name}_{email}_{base_plan}"
                     
                     if 'last_submission' not in st.session_state:
@@ -617,9 +644,6 @@ if st.session_state.app_state == "auth":
                         
                         # Run the actual submission in the background (non-blocking)
                         try:
-                            # This will run but we don't wait for it
-                            import threading
-                            
                             def background_submission():
                                 try:
                                     handle_form_submission(full_name, email, firecrawl_api_key, base_plan)
@@ -645,10 +669,6 @@ if st.session_state.app_state == "auth":
                     else:
                         # Same submission - just show the success message again
                         st.info("Request has already been submitted. Please check your email for updates.")
-
-        
-
-        
 
     with tab2:
         st.subheader("Login to Your Account")
@@ -941,8 +961,3 @@ if st.session_state.app_state == "scraping":
         with st.expander("Error Log", expanded=False):
             for log in st.session_state.error_log[-10:]:
                 st.write(log)
-
-
-
-
-

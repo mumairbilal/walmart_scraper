@@ -839,10 +839,16 @@ if st.session_state.app_state == "auth":
     st.markdown("**Professional-grade data extraction for market research and competitive analysis.**")
     
     tab1, tab2 = st.tabs(["Request License Key", "Existing User"])
-    
+    # Initialize from saved records on first load
+    if "records_df" not in st.session_state:
+        st.session_state.records_df = load_records()
     with tab1:
         st.subheader("Request License Key")
-        records_df = load_records()
+
+        # ✅ Initialize records_df in session_state
+        if "records_df" not in st.session_state:
+            st.session_state.records_df = load_records()
+
         with st.form("request_form"):
             col1, col2 = st.columns([3, 2])
             with col1:
@@ -857,11 +863,14 @@ if st.session_state.app_state == "auth":
                     "Enterprise Plan - 5,000 URLs/Day (1 Year)"
                 ], help="Choose your subscription plan")
                 base_plan = selected_plan.split(" - ")[0].replace(" Plan", "")
+                
             with col2:
                 registration_date = datetime.datetime.now().strftime("%Y-%m-%d")
                 st.text_input("Registration Date", value=registration_date, disabled=True)
+
             agree_terms = st.checkbox("I agree to the Terms of Service and Privacy Policy")
             submitted = st.form_submit_button("Send Request")
+
             if submitted:
                 if not all([full_name, email, firecrawl_api_key]):
                     st.error("Please fill in all required fields including Firecrawl API Key.")
@@ -875,11 +884,13 @@ if st.session_state.app_state == "auth":
                             if not is_valid:
                                 st.error(f"{message}")
                                 st.stop()
+
                             # Save request in Firebase
                             device_id = get_device_id()
                             if not device_id:
                                 st.error("Failed to generate device ID. Please try again.")
                                 st.stop()
+
                             client_data = {
                                 "ClientName": full_name,
                                 "ClientEmail": email,
@@ -892,13 +903,15 @@ if st.session_state.app_state == "auth":
                             if not doc_id:
                                 st.error("Failed to save request to database. Please try again.")
                                 st.stop()
+
                             # Send email to admin
                             email_sent = send_request_email(full_name, email, "Walmart Scraper", base_plan)
                             if not email_sent:
                                 st.error("Failed to send request email. Please try again or contact support.")
                                 FirebaseFunctions._firestore_db.collection("licenses").document(doc_id).delete()
                                 st.stop()
-                            # Update local records
+
+                            # ✅ Update local records in session_state
                             new_record = pd.DataFrame([{
                                 "Bot Name": "Walmart Scraper",
                                 "Sender Name": full_name,
@@ -907,30 +920,52 @@ if st.session_state.app_state == "auth":
                                 "Date": datetime.datetime.now().strftime("%d-%m-%Y"),
                                 "Request Status": "Sent"
                             }])
-                            records_df = pd.concat([records_df, new_record], ignore_index=True)
-                            save_records(records_df)
+                            st.session_state.records_df = pd.concat(
+                                [st.session_state.records_df, new_record], ignore_index=True
+                            )
+                            save_records(st.session_state.records_df)
+
+                            # ✅ Save success info for next rerun
+                            st.session_state.request_success = {
+                                "full_name": full_name,
+                                "email": email,
+                                "bot": "Walmart Scraper",
+                                "plan": selected_plan
+                            }
+
                         except Exception as e:
                             st.error(f"Request failed: {e}")
-                            st.session_state.error_log.append(f"{datetime.datetime.now()}: Request error: {e}")
+                            st.session_state.error_log.append(
+                                f"{datetime.datetime.now()}: Request error: {e}"
+                            )
                     
-                    # Explicitly stop spinner and update UI
-                    st.session_state.spinner_active = False  # Custom flag to track spinner state
-                    st.rerun()  # Force UI update to clear spinner
-                    # Display success message
-                    st.success(f"""
-                    Request sent successfully!
-                    - Name: {full_name}
-                    - Email: {email}
-                    - Bot: Walmart Scraper
-                    - Plan: {selected_plan}
-                    
-                    You will receive your license key via email after approval.
-                    """)
-                    st.session_state.error_log.append(f"{datetime.datetime.now()}: License request sent - Email: {email}, Bot: Walmart Scraper, Plan: {base_plan}")
-                    st.stop()
-        if not records_df.empty:
+                        # Explicitly stop spinner and update UI
+                        st.session_state.spinner_active = False  
+                        st.rerun()  # force refresh
+
+        # ✅ Show success after rerun
+        if "request_success" in st.session_state and st.session_state.request_success:
+            info = st.session_state.request_success
+            st.success(f"""
+            Request sent successfully!
+            - Name: {info['full_name']}
+            - Email: {info['email']}
+            - Bot: {info['bot']}
+            - Plan: {info['plan']}
+            
+            You will receive your license key via email after approval.
+            """)
+            st.session_state.error_log.append(
+                f"{datetime.datetime.now()}: License request sent - Email: {info['email']}, Bot: {info['bot']}, Plan: {info['plan']}"
+            )
+            st.session_state.request_success = None  # clear flag
+
+        # ✅ Display session DataFrame (persistent)
+        if not st.session_state.records_df.empty:
             st.subheader("Previous Requests")
-            st.dataframe(records_df)
+            st.dataframe(st.session_state.records_df)
+
+
     
     with tab2:
         st.subheader("Login to Your Account")

@@ -9,6 +9,8 @@ from firecrawl import Firecrawl
 import firebase_admin
 from firebase_admin import credentials, firestore
 import json
+from streamlit.runtime.scriptrunner import get_script_run_ctx
+from streamlit.runtime import get_instance as get_runtime
 
 # Plan limits configuration
 PLAN_LIMITS = {
@@ -19,6 +21,22 @@ PLAN_LIMITS = {
 }
 
 LOCAL_LICENSE_FILE = ".walmart_scraper_license"
+
+def get_remote_ip() -> str:
+    """Get remote ip."""
+    try:
+        ctx = get_script_run_ctx()
+        if ctx is None:
+            return None
+
+        session_info = get_runtime()._session_mgr.get_session_info(ctx.session_id)
+        if session_info is None:
+            return None
+        return session_info.request.remote_ip
+    except Exception as e:
+        if 'error_log' in st.session_state:
+            st.session_state.error_log.append(f"{datetime.datetime.now()}: Get remote IP error: {e}")
+        return None
 
 class FirebaseFunctions:
     _firestore_db = None
@@ -71,7 +89,21 @@ class FirebaseFunctions:
             return None
     
     @staticmethod
-    def is_client_eligible(client_data, expected_bot_name, expected_valid_date):
+    def has_existing_free_account(ip_address):
+        try:
+            if FirebaseFunctions._firestore_db is None:
+                FirebaseFunctions.initialize_firebase()
+            clients_ref = FirebaseFunctions._firestore_db.collection("licenses")
+            query = clients_ref.where("ClientIP", "==", ip_address).where("Plan", "==", "Free")
+            docs = list(query.stream())
+            return len(docs) > 0
+        except Exception as e:
+            if 'error_log' in st.session_state:
+                st.session_state.error_log.append(f"{datetime.datetime.now()}: Check existing free account error: {e}")
+            return False
+    
+    @staticmethod
+    def is_client_eligible(client_data, expected_bot_name, expected_valid_date, current_ip):
         if client_data is None:
             return False
         if str(client_data.get("ToolName", "")) != str(expected_bot_name):
@@ -93,8 +125,8 @@ class FirebaseFunctions:
         except Exception as e:
             st.error(f"Date validation error: {e}")
             return False
-        # Check if the license key is already in use
-        if client_data.get("ActiveSession", False):
+        registered_ip = client_data.get("ClientIP", "")
+        if registered_ip and registered_ip != current_ip:
             return False
         return True
     
@@ -112,7 +144,6 @@ class FirebaseFunctions:
             plan_config = PLAN_LIMITS.get(plan, PLAN_LIMITS["Free"])
             client_data["DailyUrlLimit"] = plan_config["daily_limit"]
             client_data["ValidUntil"] = (datetime.datetime.now() + datetime.timedelta(days=plan_config["valid_days"])).strftime("%Y-%m-%d")
-            client_data["ActiveSession"] = False
             clients_ref = FirebaseFunctions._firestore_db.collection("licenses")
             new_doc_ref = clients_ref.document()
             new_doc_ref.set(client_data)
@@ -120,24 +151,6 @@ class FirebaseFunctions:
         except Exception as e:
             st.error(f"Add client error: {e}")
             return None, None
-    
-    @staticmethod
-    def set_active_session(license_key, active=True):
-        try:
-            if FirebaseFunctions._firestore_db is None:
-                FirebaseFunctions.initialize_firebase()
-            clients_ref = FirebaseFunctions._firestore_db.collection("licenses")
-            query = clients_ref.where("LicenseKey", "==", license_key)
-            docs = list(query.stream())
-            if len(docs) > 0:
-                doc_ref = clients_ref.document(docs[0].id)
-                doc_ref.update({"ActiveSession": active})
-                return True
-            return False
-        except Exception as e:
-            if 'error_log' in st.session_state:
-                st.session_state.error_log.append(f"{datetime.datetime.now()}: Set active session error: {e}")
-            return False
     
     @staticmethod
     def update_client_validation(license_key, url_count):
@@ -209,11 +222,14 @@ class FirebaseFunctions:
 
 def check_license_eligibility(license_key, bot_name):
     try:
+        current_ip = get_remote_ip()
+        if not current_ip:
+            return False, None
         expected_valid_date = datetime.datetime.now()
         client_data = FirebaseFunctions.get_client_data_by_license_key(license_key)
         if not client_data:
             return False, None
-        is_eligible = FirebaseFunctions.is_client_eligible(client_data, bot_name, expected_valid_date)
+        is_eligible = FirebaseFunctions.is_client_eligible(client_data, bot_name, expected_valid_date, current_ip)
         return is_eligible, client_data
     except Exception as e:
         st.error(f"License check error: {e}")
@@ -229,10 +245,12 @@ def should_reset_daily_count(client_data):
     except ValueError:
         return True
 
-def validate_new_registration(email):
+def validate_new_registration(email, plan, ip_address):
     existing_email = FirebaseFunctions.get_client_data_by_email(email)
     if existing_email:
         return False, "Email already exists. Login with existing key."
+    if plan == "Free" and FirebaseFunctions.has_existing_free_account(ip_address):
+        return False, "You already have a free account registered from this IP. Please use your existing account or upgrade to a paid plan."
     return True, "OK"
 
 # Initialize Firebase
@@ -297,7 +315,6 @@ if st.session_state.app_state == "auth" and st.session_state.user_data is None:
                 try:
                     is_eligible, client_data = check_license_eligibility(saved_key, "walmart_scraper")
                     if is_eligible:
-                        FirebaseFunctions.set_active_session(saved_key, True)
                         st.session_state.user_data = client_data
                         st.session_state.license_valid = True
                         st.session_state.app_state = "scraping"
@@ -712,6 +729,10 @@ if st.session_state.app_state == "auth":
     
     with tab1:
         st.subheader("Create Your Account")
+        current_ip = get_remote_ip()
+        if not current_ip:
+            st.error("Unable to detect your IP address. Please try again later.")
+            st.stop()
         with st.form("registration_form"):
             col1, col2 = st.columns([3, 2])
             with col1:
@@ -738,7 +759,7 @@ if st.session_state.app_state == "auth":
                     elif not agree_terms:
                         st.error("You must agree to the Terms of Service.")
                     else:
-                        is_valid, message = validate_new_registration(email)
+                        is_valid, message = validate_new_registration(email, base_plan, current_ip)
                         if not is_valid:
                             st.error(f"{message}")
                         else:
@@ -746,19 +767,18 @@ if st.session_state.app_state == "auth":
                                 client_data = {
                                     "ClientName": full_name,
                                     "ClientEmail": email,
+                                    "ClientIP": current_ip,
                                     "RegistrationDate": registration_date,
                                     "Plan": base_plan,
                                     "ToolName": "walmart_scraper",
                                     "AccessStatus": "ON",
                                     "DailyUrlCount": 0,
-                                    "FirecrawlApiKey": firecrawl_api_key,
-                                    "ActiveSession": False
+                                    "FirecrawlApiKey": firecrawl_api_key
                                 }
                                 license_key, doc_id = FirebaseFunctions.add_new_client(client_data)
                                 if license_key:
                                     client_data["LicenseKey"] = license_key
                                     client_data["id"] = doc_id
-                                    FirebaseFunctions.set_active_session(license_key, True)
                                     st.session_state.user_data = client_data
                                     st.session_state.license_valid = True
                                     st.session_state.app_state = "scraping"
@@ -772,9 +792,9 @@ if st.session_state.app_state == "auth":
                                     **Plan:** {selected_plan}  
                                     **License Key:** `{license_key}`
                                     
-                                    Important: Save your license key securely. Only one device can use this license at a time.
+                                    Important: Save your license key securely. This license is bound to your current IP address.
                                     """)
-                                    st.session_state.error_log.append(f"{datetime.datetime.now()}: New account registered - Email: {email}, Plan: {base_plan}")
+                                    st.session_state.error_log.append(f"{datetime.datetime.now()}: New account registered - Email: {email}, Plan: {base_plan}, IP: {current_ip}")
                                     st.rerun()
                                 else:
                                     st.error("Failed to create account. Please try again or contact support.")
@@ -791,7 +811,6 @@ if st.session_state.app_state == "auth":
                 with st.spinner("Validating license..."):
                     is_eligible, client_data = check_license_eligibility(license_key, "walmart_scraper")
                     if is_eligible:
-                        FirebaseFunctions.set_active_session(license_key, True)
                         if dont_ask:
                             with open(LOCAL_LICENSE_FILE, "w") as f:
                                 f.write(license_key)
@@ -814,7 +833,7 @@ if st.session_state.app_state == "auth":
                         st.success("License validated successfully!")
                         st.rerun()
                     else:
-                        st.error("Invalid license key or license already in use on another device.")
+                        st.error("Invalid license key or IP address mismatch.")
             else:
                 st.error("Please enter your license key.")
     
@@ -876,7 +895,6 @@ if st.session_state.app_state == "scraping":
     if st.sidebar.button("Logout"):
         if os.path.exists(LOCAL_LICENSE_FILE):
             os.remove(LOCAL_LICENSE_FILE)
-        FirebaseFunctions.set_active_session(st.session_state.user_data.get("LicenseKey", ""), False)
         st.session_state.app_state = "auth"
         st.session_state.user_data = None
         st.session_state.license_valid = False

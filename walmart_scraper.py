@@ -863,70 +863,69 @@ if st.session_state.app_state == "auth":
             agree_terms = st.checkbox("I agree to the Terms of Service and Privacy Policy")
             submitted = st.form_submit_button("Send Request")
             if submitted:
-                with st.spinner("Processing request..."):
-                    if bot_name == "Select":
-                        st.error("Please select a bot to continue.")
-                        st.stop()
-                    elif not all([full_name, email, firecrawl_api_key]):
-                        st.error("Please fill in all required fields including Firecrawl API Key.")
-                        st.stop()
-                    elif not agree_terms:
-                        st.error("You must agree to the Terms of Service.")
-                        st.stop()
-                    try:
-                        # Validate request
-                        is_valid, message = validate_new_request(email, base_plan)
-                        if not is_valid:
-                            st.error(f"{message}")
+                if bot_name == "Select":
+                    st.error("Please select a bot to continue.")
+                elif not all([full_name, email, firecrawl_api_key]):
+                    st.error("Please fill in all required fields including Firecrawl API Key.")
+                elif not agree_terms:
+                    st.error("You must agree to the Terms of Service.")
+                else:
+                    with st.spinner("Processing request..."):
+                        try:
+                            # Validate request
+                            is_valid, message = validate_new_request(email, base_plan)
+                            if not is_valid:
+                                st.error(f"{message}")
+                                st.stop()
+                            # Save request in Firebase
+                            device_id = get_device_id()
+                            if not device_id:
+                                st.error("Failed to generate device ID. Please try again.")
+                                st.stop()
+                            client_data = {
+                                "ClientName": full_name,
+                                "ClientEmail": email,
+                                "Plan": base_plan,
+                                "ToolName": bot_name,
+                                "FirecrawlApiKey": firecrawl_api_key,
+                                "DeviceID": device_id
+                            }
+                            doc_id = FirebaseFunctions.add_request(client_data)
+                            if not doc_id:
+                                st.error("Failed to save request to database. Please try again.")
+                                st.stop()
+                            # Send email to admin
+                            if not send_request_email(full_name, email, bot_name, base_plan):
+                                st.error("Failed to send request email. Please try again or contact support.")
+                                FirebaseFunctions._firestore_db.collection("licenses").document(doc_id).delete()
+                                st.stop()
+                            # Update local records
+                            new_record = pd.DataFrame([{
+                                "Bot Name": bot_name,
+                                "Sender Name": full_name,
+                                "Email": email,
+                                "Time": datetime.datetime.now().strftime("%I:%M %p"),
+                                "Date": datetime.datetime.now().strftime("%d-%m-%Y"),
+                                "Request Status": "Sent"
+                            }])
+                            records_df = pd.concat([records_df, new_record], ignore_index=True)
+                            save_records(records_df)
+                        except Exception as e:
+                            st.error(f"Request failed: {e}")
+                            st.session_state.error_log.append(f"{datetime.datetime.now()}: Request error: {e}")
                             st.stop()
-                        # Save request in Firebase
-                        device_id = get_device_id()
-                        if not device_id:
-                            st.error("Failed to generate device ID. Please try again.")
-                            st.stop()
-                        client_data = {
-                            "ClientName": full_name,
-                            "ClientEmail": email,
-                            "Plan": base_plan,
-                            "ToolName": "walmart_scraper",
-                            "FirecrawlApiKey": firecrawl_api_key,
-                            "DeviceID": device_id
-                        }
-                        doc_id = FirebaseFunctions.add_request(client_data)
-                        if not doc_id:
-                            st.error("Failed to save request to database. Please try again.")
-                            st.stop()
-                        # Send email to admin
-                        if not send_request_email(full_name, email, bot_name, base_plan):
-                            st.error("Failed to send request email. Please try again or contact support.")
-                            FirebaseFunctions._firestore_db.collection("licenses").document(doc_id).delete()
-                            st.stop()
-                        # Update local records
-                        new_record = pd.DataFrame([{
-                            "Bot Name": bot_name,
-                            "Sender Name": full_name,
-                            "Email": email,
-                            "Time": datetime.datetime.now().strftime("%I:%M %p"),
-                            "Date": datetime.datetime.now().strftime("%d-%m-%Y"),
-                            "Request Status": "Sent"
-                        }])
-                        records_df = pd.concat([records_df, new_record], ignore_index=True)
-                        save_records(records_df)
-                        st.success(f"""
-                        Request sent successfully!
-                        - Name: {full_name}
-                        - Email: {email}
-                        - Bot: {bot_name}
-                        - Plan: {selected_plan}
-                        
-                        You will receive your license key via email after approval.
-                        """)
-                        st.session_state.error_log.append(f"{datetime.datetime.now()}: License request sent - Email: {email}, Bot: {bot_name}, Plan: {base_plan}")
-                        st.stop()
-                    except Exception as e:
-                        st.error(f"Request failed: {e}")
-                        st.session_state.error_log.append(f"{datetime.datetime.now()}: Request error: {e}")
-                        st.stop()
+                    # Display success message outside spinner
+                    st.success(f"""
+                    Request sent successfully!
+                    - Name: {full_name}
+                    - Email: {email}
+                    - Bot: {bot_name}
+                    - Plan: {selected_plan}
+                    
+                    You will receive your license key via email after approval.
+                    """)
+                    st.session_state.error_log.append(f"{datetime.datetime.now()}: License request sent - Email: {email}, Bot: {bot_name}, Plan: {base_plan}")
+                    st.stop()
         
         if not records_df.empty:
             st.subheader("Previous Requests")
@@ -1226,3 +1225,4 @@ if st.session_state.app_state == "scraping":
         with st.expander("Error Log", expanded=False):
             for log in st.session_state.error_log[-10:]:
                 st.write(log)
+

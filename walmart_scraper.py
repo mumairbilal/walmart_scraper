@@ -842,10 +842,12 @@ if st.session_state.app_state == "auth":
 
 tab1, tab2 = st.tabs(["Request License Key", "Existing User"])
 
+tab1, tab2 = st.tabs(["Request License Key", "Existing User"])
+
 with tab1:
     st.subheader("Request License Key")
 
-    # ✅ Load records from Firestore at startup
+    # --- Load records once at startup ---
     def load_records_from_db():
         try:
             query = FirebaseFunctions._firestore_db.collection("licenses").stream()
@@ -860,126 +862,107 @@ with tab1:
                     "Date": data.get("Date", ""),
                     "Request Status": "Sent"
                 })
-            return pd.DataFrame(
-                records,
-                columns=["Bot Name", "Sender Name", "Email", "Time", "Date", "Request Status"]
-            )
+            return pd.DataFrame(records, columns=[
+                "Bot Name", "Sender Name", "Email", "Time", "Date", "Request Status"
+            ])
         except Exception as e:
             st.error(f"Error loading records: {e}")
-            return pd.DataFrame(
-                columns=["Bot Name", "Sender Name", "Email", "Time", "Date", "Request Status"]
-            )
+            return pd.DataFrame(columns=[
+                "Bot Name", "Sender Name", "Email", "Time", "Date", "Request Status"
+            ])
 
     if "records_df" not in st.session_state:
         st.session_state.records_df = load_records_from_db()
 
+    # --- Form UI ---
     with st.form("request_form"):
-        col1, col2 = st.columns([3, 2])
-        with col1:
-            full_name = st.text_input("Full Name", placeholder="John Doe")
-            email = st.text_input("Email Address", placeholder="john@example.com")
-            firecrawl_api_key = st.text_input(
-                "Firecrawl API Key", placeholder="fc-...", type="password"
-            )
-            bot_name = "Walmart Scraper"
-            selected_plan = st.selectbox(
-                "Select Plan",
-                [
-                    "Free Plan - 50 URLs/Day (7 Days)",
-                    "Basic Plan - 500 URLs/Day (1 Month)",
-                    "Premium Plan - 2,500 URLs/Day (3 Months)",
-                    "Enterprise Plan - 5,000 URLs/Day (1 Year)"
-                ]
-            )
-            base_plan = selected_plan.split(" - ")[0].replace(" Plan", "")
+        full_name = st.text_input("Full Name", placeholder="John Doe")
+        email = st.text_input("Email Address", placeholder="john@example.com")
+        firecrawl_api_key = st.text_input(
+            "Firecrawl API Key", placeholder="fc-...", type="password"
+        )
+        bot_name = "Walmart Scraper"
+        selected_plan = st.selectbox(
+            "Select Plan",
+            [
+                "Free Plan - 50 URLs/Day (7 Days)",
+                "Basic Plan - 500 URLs/Day (1 Month)",
+                "Premium Plan - 2,500 URLs/Day (3 Months)",
+                "Enterprise Plan - 5,000 URLs/Day (1 Year)"
+            ]
+        )
+        base_plan = selected_plan.split(" - ")[0].replace(" Plan", "")
 
-        with col2:
-            registration_date = datetime.datetime.now().strftime("%Y-%m-%d")
-            st.text_input("Registration Date", value=registration_date, disabled=True)
+        registration_date = datetime.datetime.now().strftime("%Y-%m-%d")
+        st.text_input("Registration Date", value=registration_date, disabled=True)
 
         agree_terms = st.checkbox("I agree to the Terms of Service and Privacy Policy")
         submitted = st.form_submit_button("Send Request")
 
-        if submitted:
-            if not all([full_name, email, firecrawl_api_key]):
-                st.error("Please fill in all required fields including Firecrawl API Key.")
-            elif not agree_terms:
-                st.error("You must agree to the Terms of Service.")
-            else:
+    # --- Process submission ---
+    if submitted:
+        if not all([full_name, email, firecrawl_api_key]):
+            st.error("Please fill in all required fields including Firecrawl API Key.")
+        elif not agree_terms:
+            st.error("You must agree to the Terms of Service.")
+        else:
+            try:
                 with st.spinner("Processing request..."):
-                    try:
-                        # validate
-                        is_valid, message = validate_new_request(email, base_plan)
-                        if not is_valid:
-                            st.error(f"{message}")
-                            st.stop()
+                    # validate
+                    is_valid, message = validate_new_request(email, base_plan)
+                    if not is_valid:
+                        raise ValueError(message)
 
-                        # save request in Firestore
-                        device_id = get_device_id()
-                        client_data = {
-                            "ClientName": full_name,
-                            "ClientEmail": email,
-                            "Plan": base_plan,
-                            "ToolName": bot_name,
-                            "FirecrawlApiKey": firecrawl_api_key,
-                            "DeviceID": device_id,
-                            "Time": datetime.datetime.now().strftime("%I:%M %p"),
-                            "Date": datetime.datetime.now().strftime("%d-%m-%Y")
-                        }
-                        FirebaseFunctions.add_request(client_data)
+                    # prepare payload
+                    device_id = get_device_id()
+                    client_data = {
+                        "ClientName": full_name,
+                        "ClientEmail": email,
+                        "Plan": base_plan,
+                        "ToolName": bot_name,
+                        "FirecrawlApiKey": firecrawl_api_key,
+                        "DeviceID": device_id,
+                        "Time": datetime.datetime.now().strftime("%I:%M %p"),
+                        "Date": datetime.datetime.now().strftime("%d-%m-%Y")
+                    }
 
-                        # send email
-                        send_request_email(full_name, email, bot_name, base_plan)
+                    # save + notify
+                    FirebaseFunctions.add_request(client_data)
+                    send_request_email(full_name, email, bot_name, base_plan)
 
-                        # update session DataFrame immediately
-                        new_record = pd.DataFrame([{
-                            "Bot Name": bot_name,
-                            "Sender Name": full_name,
-                            "Email": email,
-                            "Time": client_data["Time"],
-                            "Date": client_data["Date"],
-                            "Request Status": "Sent"
-                        }])
-                        st.session_state.records_df = pd.concat(
-                            [st.session_state.records_df, new_record], ignore_index=True
-                        )
+                # ✅ Update dataframe immediately after spinner
+                new_record = pd.DataFrame([{
+                    "Bot Name": bot_name,
+                    "Sender Name": full_name,
+                    "Email": email,
+                    "Time": client_data["Time"],
+                    "Date": client_data["Date"],
+                    "Request Status": "Sent"
+                }])
+                st.session_state.records_df = pd.concat(
+                    [st.session_state.records_df, new_record], ignore_index=True
+                )
 
-                        # mark success
-                        st.session_state.request_success = {
-                            "full_name": full_name,
-                            "email": email,
-                            "bot": bot_name,
-                            "plan": selected_plan
-                        }
+                st.success(f"""
+                ✅ Request sent successfully!
+                - Name: {full_name}
+                - Email: {email}
+                - Bot: {bot_name}
+                - Plan: {selected_plan}
 
-                    except Exception as e:
-                        st.error(f"Request failed: {e}")
+                You will receive your license key via email after approval.
+                """)
 
-    # ✅ Show success message
-    if "request_success" in st.session_state and st.session_state.request_success:
-        info = st.session_state.request_success
-        st.success(f"""
-        Request sent successfully!
-        - Name: {info['full_name']}
-        - Email: {info['email']}
-        - Bot: {info['bot']}
-        - Plan: {info['plan']}
-        
-        You will receive your license key via email after approval.
-        """)
-        st.session_state.request_success = None  # clear after showing
+            except Exception as e:
+                st.error(f"Request failed: {e}")
 
-    # ✅ Show DataFrame (always latest from session)
+    # --- Show DataFrame ---
     st.subheader("Previous Requests")
     if not st.session_state.records_df.empty:
         st.dataframe(st.session_state.records_df)
     else:
         st.info("No requests yet.")
 
-
-
-
-    
     with tab2:
         st.subheader("Login to Your Account")
         license_key = st.text_input("License Key", type="password", placeholder="Enter your license key")
@@ -1274,5 +1257,6 @@ if st.session_state.app_state == "scraping":
         with st.expander("Error Log", expanded=False):
             for log in st.session_state.error_log[-10:]:
                 st.write(log)
+
 
 

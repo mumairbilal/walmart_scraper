@@ -990,14 +990,14 @@ if st.session_state.app_state == "auth":
 # -------------------------------
 if st.session_state.app_state == "scraping":
     # Sidebar
-    st.sidebar.header("Scraper Settings")
+    #st.sidebar.header("Scraper Settings")
     def sidebar_header(title, icon_path=None, subtitle=None, icon_width=24):
         html = '<div style="display: flex; align-items: center; margin-bottom: 10px;">'
         if icon_path and os.path.exists(icon_path):
             with open(icon_path, "rb") as f:
                 data = f.read()
             #encoded = base64.b64encode(data).decode()
-            html += f"<img src='data:image/png;base64,{encoded}' width='{icon_width}' style='margin-right:8px;'>"
+            #html += f"<img src='data:image/png;base64,{encoded}' width='{icon_width}' style='margin-right:8px;'>"
         html += f"<span style='font-size: 18px; font-weight: bold;'>{title}</span></div>"
         if subtitle:
             html += f"<div style='font-size: 12px; color: #666666; margin-bottom: 10px;'>{subtitle}</div>"
@@ -1005,7 +1005,7 @@ if st.session_state.app_state == "scraping":
 
     sidebar_header(
         title="Scraper Settings",
-        icon_path="D:/settings.png",
+        icon_path="settings.png",
         subtitle="Customize your data extraction"
     )
 
@@ -1067,17 +1067,17 @@ if st.session_state.app_state == "scraping":
         st.session_state.error_log = []
         st.rerun()
 
-    st.title("Walmart Product Scraper")
-    st.markdown("**Extract structured product data with ease. Perfect for market research and catalog building.**")
+    #st.title("Walmart Product Scraper")
+    #st.markdown("**Extract structured product data with ease. Perfect for market research and catalog building.**")
 
     if not st.session_state.firecrawl_api_key:
         st.error("Firecrawl API key is required. Please enter it in the sidebar.")
         st.stop() 
 
     # Page Config
-    image_path = "D:/icon2.png"
+    image_path = "icon2.png"
     try:
-        st.set_page_config(page_title="Walmart Product Scraper", layout="wide", initial_sidebar_state="expanded")
+        st.set_page_config(page_title="Walmart Product Scraper Powered by Umisoft",page_icon="logo.png", initial_sidebar_state="expanded")
     except:
         pass
         

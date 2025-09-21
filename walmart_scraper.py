@@ -912,7 +912,7 @@ if st.session_state.app_state == "auth":
                         except Exception as e:
                             st.error(f"Request failed: {e}")
                             st.session_state.error_log.append(f"{datetime.datetime.now()}: Request error: {e}")
-                            st.stop()
+                    st.stop()
                     # Explicitly stop spinner and update UI
                     st.session_state.spinner_active = False  # Custom flag to track spinner state
                     st.rerun()  # Force UI update to clear spinner
@@ -1251,6 +1251,7 @@ if st.session_state.app_state == "scraping":
         with st.expander("Error Log", expanded=False):
             for log in st.session_state.error_log[-10:]:
                 st.write(log)
+
 
 
 

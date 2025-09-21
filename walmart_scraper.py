@@ -197,11 +197,13 @@ class FirebaseFunctions:
             return False
     
     @staticmethod
-    def is_client_eligible(client_data, expected_bot_name, expected_valid_date, current_device_id):
+    def is_client_eligible(client_data, key,expected_bot_name, expected_valid_date, current_device_id):
         if client_data is None:
             return False, "Client data not found."
         if str(client_data.get("ToolName", "")).lower() != str(expected_bot_name).lower():
             return False, "Invalid bot name."
+        if str(client_data.get("LicenseKey", "")) != key:
+            return False, "License key is not valid."
         if str(client_data.get("AccessStatus", "")) != "ON":
             return False, "Access is not active."
         stored_device_id = client_data.get("DeviceID", "")
@@ -329,7 +331,7 @@ def check_license_eligibility(license_key, bot_name):
         if not current_device_id:
             return False, None, "Failed to generate device ID."
         client_data = FirebaseFunctions.get_client_data_by_license_key(license_key)
-        is_eligible, message = FirebaseFunctions.is_client_eligible(client_data, bot_name, expected_valid_date, current_device_id)
+        is_eligible, message = FirebaseFunctions.is_client_eligible(client_data, license_key,bot_name, expected_valid_date, current_device_id)
         return is_eligible, client_data, message
     except Exception as e:
         st.session_state.error_log.append(f"{datetime.datetime.now()}: License check error: {e}")
@@ -1361,4 +1363,3 @@ if st.session_state.app_state == "scraping":
         Contact: <a href="mailto:support@umisoft.com" style="text-decoration: none;">support@umisoft.com</a> | © 2025 Umisoft Ltd. | Version 2.0
     </div>
     """, unsafe_allow_html=True)
-

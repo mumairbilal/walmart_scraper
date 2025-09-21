@@ -578,9 +578,18 @@ if st.session_state.app_state == "auth":
                             # Send email to admin with enhanced error handling
                             st.session_state.error_log.append(f"{datetime.datetime.now()}: Attempting to send email for {email}")
                             try:
-                                with smtplib.SMTP('smtp.gmail.com', 587, timeout=10) as server:
+                                with smtplib.SMTP('smtp.gmail.com', 587, timeout=15) as server:
                                     server.starttls()
                                     server.login(os.getenv("SMTP_USER", "umisoftbotnotifier@gmail.com"), os.getenv("SMTP_PASS", "ylor vkis zarh mokt"))
+                                    # Test email to verify connection
+                                    test_msg = MIMEMultipart()
+                                    test_msg['From'] = os.getenv("SMTP_USER", "umisoftbotnotifier@gmail.com")
+                                    test_msg['To'] = os.getenv("ADMIN_EMAIL", "umisoftbotnotifier@gmail.com")
+                                    test_msg['Subject'] = "Test Email"
+                                    test_msg.attach(MIMEText("This is a test email to verify SMTP settings.", 'plain'))
+                                    server.send_message(test_msg)
+                                    st.session_state.error_log.append(f"{datetime.datetime.now()}: SMTP test email sent successfully for {email}")
+                                    # Send actual request email
                                     msg = MIMEMultipart()
                                     msg['From'] = os.getenv("SMTP_USER", "umisoftbotnotifier@gmail.com")
                                     msg['To'] = os.getenv("ADMIN_EMAIL", "umisoftbotnotifier@gmail.com")
@@ -592,9 +601,12 @@ if st.session_state.app_state == "auth":
                                     msg.attach(MIMEText(body, 'html'))
                                     server.send_message(msg)
                                 email_sent = True
-                                st.session_state.error_log.append(f"{datetime.datetime.now()}: Email sent successfully for {email}")
+                                st.session_state.error_log.append(f"{datetime.datetime.now()}: Request email sent successfully for {email}")
                             except smtplib.SMTPAuthenticationError as e:
-                                st.session_state.error_log.append(f"{datetime.datetime.now()}: SMTP Authentication Error: {e}")
+                                st.session_state.error_log.append(f"{datetime.datetime.now()}: SMTP Authentication Error: {e}. Check SMTP_USER and SMTP_PASS environment variables.")
+                                email_sent = False
+                            except smtplib.SMTPConnectError as e:
+                                st.session_state.error_log.append(f"{datetime.datetime.now()}: SMTP Connect Error: {e}. Check internet connection or SMTP server.")
                                 email_sent = False
                             except smtplib.SMTPException as e:
                                 st.session_state.error_log.append(f"{datetime.datetime.now()}: SMTP Exception: {e}")
@@ -622,18 +634,6 @@ if st.session_state.app_state == "auth":
                             st.error(f"Request failed: {e}")
                             st.session_state.error_log.append(f"{datetime.datetime.now()}: Request error: {e}")
                             st.stop()
-                    # Display success message outside spinner
-                    st.success(f"""
-                    Request sent successfully!
-                    - Name: {full_name}
-                    - Email: {email}
-                    - Bot: Walmart Scraper
-                    - Plan: {selected_plan}
-                    
-                    You will receive your license key via email after approval.
-                    """)
-                    st.session_state.error_log.append(f"{datetime.datetime.now()}: License request sent - Email: {email}, Bot: Walmart Scraper, Plan: {base_plan}")
-                    st.stop()
                     # Display success message outside spinner
                     st.success(f"""
                     Request sent successfully!
@@ -945,4 +945,5 @@ if st.session_state.app_state == "scraping":
         with st.expander("Error Log", expanded=False):
             for log in st.session_state.error_log[-10:]:
                 st.write(log)
+
 

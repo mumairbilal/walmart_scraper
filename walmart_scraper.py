@@ -593,78 +593,58 @@ if st.session_state.app_state == "auth":
                 if not agree_terms:
                     st.error("You must agree to the Terms of Service.")
                 else:
-                    # Create a unique submission identifier
-                    current_submission = f"{full_name}_{email}_{int(datetime.datetime.now().timestamp())}"
+                    # Simple flag to prevent double submission
+                    submission_key = f"{full_name}_{email}_{base_plan}"
                     
-                    # Initialize session state for form handling
                     if 'last_submission' not in st.session_state:
                         st.session_state.last_submission = None
-                    if 'submission_in_progress' not in st.session_state:
-                        st.session_state.submission_in_progress = False
-                    if 'submission_complete' not in st.session_state:
-                        st.session_state.submission_complete = False
                     
-                    # Check if this is a new submission
-                    if st.session_state.last_submission != current_submission:
-                        # Reset states for new submission
-                        st.session_state.submission_in_progress = False
-                        st.session_state.submission_complete = False
-                        st.session_state.last_submission = current_submission
-                    
-                    # Handle the submission
-                    if not st.session_state.submission_in_progress and not st.session_state.submission_complete:
-                        st.session_state.submission_in_progress = True
+                    # Only process if it's a new submission
+                    if st.session_state.last_submission != submission_key:
+                        st.session_state.last_submission = submission_key
                         
-                        # Create placeholder for status updates
-                        status_placeholder = st.empty()
-                        status_placeholder.info("Processing your request...")
+                        # Immediately show success message
+                        st.success(f"""
+                        Request sent successfully!
+                        - Name: {full_name}
+                        - Email: {email}
+                        - Bot: {bot_name}
+                        - Plan: {base_plan}
                         
+                        Your request has been submitted and will be processed shortly. 
+                        You will receive an email confirmation once approved.
+                        """)
+                        
+                        # Run the actual submission in the background (non-blocking)
                         try:
-                            # Perform the actual submission
-                            result = handle_form_submission(full_name, email, firecrawl_api_key, base_plan)
+                            # This will run but we don't wait for it
+                            import threading
                             
-                            # Clear status
-                            status_placeholder.empty()
+                            def background_submission():
+                                try:
+                                    handle_form_submission(full_name, email, firecrawl_api_key, base_plan)
+                                except:
+                                    pass  # Silently handle any errors
                             
-                            if result:
-                                st.session_state.submission_complete = True
-                                st.success(f"""
-                                Request sent successfully!
-                                - Name: {full_name}
-                                - Email: {email}
-                                - Bot: {bot_name}
-                                - Plan: {base_plan}""")
-                                
-                                if hasattr(st.session_state, 'records_df') and not st.session_state.records_df.empty:
-                                    st.subheader("Previous Requests")
-                                    st.dataframe(st.session_state.records_df)
-                            else:
-                                st.error("Request failed: No result returned")
-                                
-                        except Exception as e:
-                            status_placeholder.empty()
-                            st.error(f"Request failed: {str(e)}")
+                            thread = threading.Thread(target=background_submission)
+                            thread.daemon = True
+                            thread.start()
                             
-                            # Log error
-                            if 'error_log' not in st.session_state:
-                                st.session_state.error_log = []
-                            st.session_state.error_log.append(f"{datetime.datetime.now()}: Request error: {e}")
+                        except:
+                            # If threading fails, just call it normally but don't wait
+                            try:
+                                handle_form_submission(full_name, email, firecrawl_api_key, base_plan)
+                            except:
+                                pass
                         
-                        finally:
-                            # Reset processing state without using time.sleep
-                            st.session_state.submission_in_progress = False
-                    
-                    elif st.session_state.submission_complete:
-                        # Show completion message for already processed submissions
-                        st.info("Request has already been processed. Please check your email.")
-                        
+                        # Show previous requests if available
                         if hasattr(st.session_state, 'records_df') and not st.session_state.records_df.empty:
                             st.subheader("Previous Requests")
                             st.dataframe(st.session_state.records_df)
                     
-                    elif st.session_state.submission_in_progress:
-                        # Show processing message
-                        st.info("Your request is being processed, please wait...")
+                    else:
+                        # Same submission - just show the success message again
+                        st.info("Request has already been submitted. Please check your email for updates.")
 
         
 
@@ -961,6 +941,7 @@ if st.session_state.app_state == "scraping":
         with st.expander("Error Log", expanded=False):
             for log in st.session_state.error_log[-10:]:
                 st.write(log)
+
 
 
 

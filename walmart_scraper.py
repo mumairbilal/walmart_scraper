@@ -9,7 +9,11 @@ from firecrawl import Firecrawl
 import firebase_admin
 from firebase_admin import credentials, firestore
 import json
-import streamlit.components.v1 as components
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+import psutil
+import re
 
 # Plan limits configuration
 PLAN_LIMITS = {
@@ -20,45 +24,155 @@ PLAN_LIMITS = {
 }
 
 LOCAL_LICENSE_FILE = ".walmart_scraper_license"
+LOCAL_MACHINE_ID_FILE = ".system_setup_id"
+LOCAL_RECORDS_FILE = "records.csv"
 
-def get_remote_ip() -> str:
-    """Get client's public IP using JavaScript and api.ipify.org."""
-    if "client_ip" not in st.session_state:
-        # Inject JavaScript to fetch IP
-        components.html(
-            """
-            <script>
-            fetch('https://api.ipify.org?format=json')
-                .then(response => response.json())
-                .then(data => {
-                    // Store IP in sessionStorage to persist across reruns
-                    sessionStorage.setItem('client_ip', data.ip);
-                    // Send IP to Streamlit via postMessage
-                    parent.window.postMessage({type: 'streamlit:setComponentValue', value: data.ip}, '*');
-                })
-                .catch(err => {
-                    console.error('IP fetch error:', err);
-                    parent.window.postMessage({type: 'streamlit:setComponentValue', value: null}, '*');
-                });
-            </script>
-            """,
-            height=0,
-            width=0
-        )
-        # Fallback: Check sessionStorage if available
-        ip_from_storage = st_javascript("sessionStorage.getItem('client_ip')")
-        if ip_from_storage:
-            st.session_state.client_ip = ip_from_storage
-            return ip_from_storage
-        return None
-    return st.session_state.client_ip
+def get_mac_address():
+    """Retrieve the MAC address of the first enabled physical network adapter."""
+    def is_virtual(name: str) -> bool:
+        return bool(re.search(r'^(lo|loop|docker|veth|br-|virbr|vmnet|vbox|vmware|tun|tap|wg)', name, re.I))
 
-def st_javascript(script):
-    """Execute JavaScript and return result."""
-    components.html(f"<script>parent.window.postMessage({{type: 'streamlit:setComponentValue', value: {script}}}, '*')</script>", height=0)
-    # Wait briefly for message to process
-    time.sleep(0.1)
-    return st.session_state.get("client_ip", None)
+    candidates = []
+    for iface, addrs in psutil.net_if_addrs().items():
+        for addr in addrs:
+            if addr.family == psutil.AF_LINK and addr.address and addr.address != "00:00:00:00:00:00":
+                if not is_virtual(iface):
+                    candidates.append((iface.lower(), addr.address.replace(":", "").upper()))
+
+    # Prefer Ethernet > LAN > en* > Wi-Fi
+    for preferred in ["ethernet", "lan", "eth", "en", "enp"]:
+        for _, mac in candidates:
+            if mac:
+                return mac
+    for _, mac in candidates:
+        if mac:
+            return mac
+    return "UNKNOWN"
+
+def check_if_new_pc():
+    """Check if this is a new PC by comparing stored MAC address."""
+    current_mac = get_mac_address()
+    if os.path.exists(LOCAL_MACHINE_ID_FILE):
+        with open(LOCAL_MACHINE_ID_FILE, "r") as f:
+            stored_mac = f.read().strip()
+        return stored_mac == current_mac
+    return False
+
+def save_mac_address():
+    """Save the current MAC address to a local file."""
+    try:
+        with open(LOCAL_MACHINE_ID_FILE, "w") as f:
+            f.write(get_mac_address())
+    except Exception as e:
+        st.session_state.error_log.append(f"{datetime.datetime.now()}: Error saving MAC address: {e}")
+
+def load_records():
+    """Load registration records from local CSV."""
+    if os.path.exists(LOCAL_RECORDS_FILE):
+        try:
+            df = pd.read_csv(LOCAL_RECORDS_FILE)
+            return df
+        except Exception as e:
+            st.session_state.error_log.append(f"{datetime.datetime.now()}: Error loading records: {e}")
+            return pd.DataFrame(columns=["Bot Name", "Sender Name", "Email", "Time", "Date", "MAC Address", "Request Status"])
+    return pd.DataFrame(columns=["Bot Name", "Sender Name", "Email", "Time", "Date", "MAC Address", "Request Status"])
+
+def save_records(df):
+    """Save registration records to local CSV."""
+    try:
+        df.to_csv(LOCAL_RECORDS_FILE, index=False)
+    except Exception as e:
+        st.session_state.error_log.append(f"{datetime.datetime.now()}: Error saving records: {e}")
+
+def send_request_email(name, client_email, bot_name, mac_address):
+    """Send license request email to admin."""
+    admin_email = os.getenv("ADMIN_EMAIL", "umisoftbotnotifier@gmail.com")
+    smtp_user = os.getenv("SMTP_USER", "umisoftbotnotifier@gmail.com")
+    smtp_pass = os.getenv("SMTP_PASS", "ylor vkis zarh mokt")
+    max_retries = 10
+    retry_count = 0
+    while retry_count < max_retries:
+        try:
+            msg = MIMEMultipart()
+            msg['From'] = smtp_user
+            msg['To'] = admin_email
+            msg['Subject'] = "New Client"
+
+            body = f"""
+            <html>
+            <head>
+                <style>
+                    body {{
+                        font-family: Arial, sans-serif;
+                        line-height: 1.6;
+                        color: #333333;
+                    }}
+                    .container {{
+                        max-width: 600px;
+                        margin: 0 auto;
+                        padding: 20px;
+                        border: 1px solid #e0e0e0;
+                        border-radius: 10px;
+                        box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+                    }}
+                    .header {{
+                        background-color: #f7f7f7;
+                        padding: 10px 20px;
+                        border-bottom: 1px solid #e0e0e0;
+                        text-align: center;
+                    }}
+                    .header h1 {{
+                        margin: 0;
+                        font-size: 24px;
+                        color: #000000;
+                    }}
+                    .content {{
+                        padding: 20px;
+                    }}
+                    .content p {{
+                        margin: 0;
+                    }}
+                    .footer {{
+                        text-align: center;
+                        margin-top: 20px;
+                    }}
+                    .footer p {{
+                        font-size: 12px;
+                        color: #888888;
+                    }}
+                </style>
+            </head>
+            <body>
+                <div class='container'>
+                    <div class='header'>
+                        <h1>New Key Request</h1>
+                    </div>
+                    <div class='content'>
+                        <p><strong>Name:</strong> {name}</p><br>
+                        <p><strong>Client Email:</strong> <a href='mailto:{client_email}'>{client_email}</a></p><br>
+                        <p><strong>Bot Name:</strong> {bot_name}</p><br>
+                        <p><strong>MAC Address:</strong> {mac_address}</p>
+                    </div>
+                    <div class='footer'>
+                        <p>Thank you for using our bot service. We will get back to you shortly.</p>
+                    </div>
+                </div>
+            </body>
+            </html>"""
+            msg.attach(MIMEText(body, 'html'))
+
+            with smtplib.SMTP('smtp.gmail.com', 587) as server:
+                server.starttls()
+                server.login(smtp_user, smtp_pass)
+                server.send_message(msg)
+            return True
+        except smtplib.SMTPServerDisconnected:
+            retry_count += 1
+            time.sleep(2)
+        except Exception as e:
+            st.session_state.error_log.append(f"{datetime.datetime.now()}: Email send error: {e}")
+            return False
+    return False
 
 class FirebaseFunctions:
     _firestore_db = None
@@ -111,14 +225,12 @@ class FirebaseFunctions:
             return None
     
     @staticmethod
-    def has_existing_free_account(ip_address):
-        if not ip_address:
-            return False
+    def has_existing_free_account(mac_address):
         try:
             if FirebaseFunctions._firestore_db is None:
                 FirebaseFunctions.initialize_firebase()
             clients_ref = FirebaseFunctions._firestore_db.collection("licenses")
-            query = clients_ref.where("ClientIP", "==", ip_address).where("Plan", "==", "Free")
+            query = clients_ref.where("ClientMacAddress", "==", mac_address).where("Plan", "==", "Free")
             docs = list(query.stream())
             return len(docs) > 0
         except Exception as e:
@@ -127,7 +239,7 @@ class FirebaseFunctions:
             return False
     
     @staticmethod
-    def is_client_eligible(client_data, expected_bot_name, expected_valid_date, current_ip):
+    def is_client_eligible(client_data, expected_bot_name, expected_valid_date, current_mac_address):
         if client_data is None:
             return False
         if str(client_data.get("ToolName", "")) != str(expected_bot_name):
@@ -149,33 +261,26 @@ class FirebaseFunctions:
         except Exception as e:
             st.error(f"Date validation error: {e}")
             return False
-        registered_ip = client_data.get("ClientIP", "")
-        if registered_ip and current_ip and registered_ip != current_ip:
+        registered_mac = client_data.get("ClientMacAddress", "")
+        if registered_mac and current_mac_address and registered_mac != current_mac_address:
             return False
         return True
     
     @staticmethod
-    def add_new_client(client_data, ip_address):
+    def add_request(client_data, mac_address):
         try:
             if FirebaseFunctions._firestore_db is None:
                 FirebaseFunctions.initialize_firebase()
-            license_key = FirebaseFunctions.generate_license_key()
-            client_data["LicenseKey"] = license_key
-            client_data["ClientIP"] = ip_address if ip_address else ""
+            client_data["ClientMacAddress"] = mac_address
             client_data["RegistrationDate"] = datetime.datetime.now().strftime("%Y-%m-%d")
-            client_data["LastValidated"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            client_data["DailyUrlCount"] = 0
-            plan = client_data.get("Plan", "Free")
-            plan_config = PLAN_LIMITS.get(plan, PLAN_LIMITS["Free"])
-            client_data["DailyUrlLimit"] = plan_config["daily_limit"]
-            client_data["ValidUntil"] = (datetime.datetime.now() + datetime.timedelta(days=plan_config["valid_days"])).strftime("%Y-%m-%d")
+            client_data["AccessStatus"] = "PENDING"
             clients_ref = FirebaseFunctions._firestore_db.collection("licenses")
             new_doc_ref = clients_ref.document()
             new_doc_ref.set(client_data)
-            return license_key, new_doc_ref.id
+            return new_doc_ref.id
         except Exception as e:
-            st.error(f"Add client error: {e}")
-            return None, None
+            st.error(f"Add request error: {e}")
+            return None
     
     @staticmethod
     def update_client_validation(license_key, url_count):
@@ -247,12 +352,12 @@ class FirebaseFunctions:
 
 def check_license_eligibility(license_key, bot_name):
     try:
-        current_ip = get_remote_ip()
+        current_mac_address = get_mac_address()
         expected_valid_date = datetime.datetime.now()
         client_data = FirebaseFunctions.get_client_data_by_license_key(license_key)
         if not client_data:
             return False, None
-        is_eligible = FirebaseFunctions.is_client_eligible(client_data, bot_name, expected_valid_date, current_ip)
+        is_eligible = FirebaseFunctions.is_client_eligible(client_data, bot_name, expected_valid_date, current_mac_address)
         return is_eligible, client_data
     except Exception as e:
         st.error(f"License check error: {e}")
@@ -268,12 +373,12 @@ def should_reset_daily_count(client_data):
     except ValueError:
         return True
 
-def validate_new_registration(email, plan, ip_address):
+def validate_new_request(email, plan, mac_address):
     existing_email = FirebaseFunctions.get_client_data_by_email(email)
     if existing_email:
-        return False, "Email already exists. Login with existing key."
-    if ip_address and plan == "Free" and FirebaseFunctions.has_existing_free_account(ip_address):
-        return False, "You already have a free account registered from this IP. Please use your existing account or upgrade to a paid plan."
+        return False, "Email already exists. Use your existing account or contact support."
+    if mac_address and plan == "Free" and FirebaseFunctions.has_existing_free_account(mac_address):
+        return False, "You already have a free account registered on this device. Please use your existing account or upgrade to a paid plan."
     return True, "OK"
 
 # Initialize Firebase
@@ -327,8 +432,10 @@ if "pending_quota_updates" not in st.session_state:
     st.session_state.pending_quota_updates = []
 if "rate_limit_delay" not in st.session_state:
     st.session_state.rate_limit_delay = 0.5
-if "client_ip" not in st.session_state:
-    st.session_state.client_ip = None
+
+# Load records
+records_df = load_records()
+is_new_pc = check_if_new_pc()
 
 # Auto-login with saved license key
 if st.session_state.app_state == "auth" and st.session_state.user_data is None:
@@ -362,7 +469,7 @@ if st.session_state.app_state == "auth" and st.session_state.user_data is None:
                 except Exception as e:
                     st.session_state.error_log.append(f"{datetime.datetime.now()}: Auto-login error: {e}")
 
-# CSS (same as before)
+# CSS
 st.markdown("""
 <style>
     div.stButton > button {
@@ -750,20 +857,19 @@ if st.session_state.app_state == "auth":
     st.title("Walmart Product Scraper")
     st.markdown("**Professional-grade data extraction for market research and competitive analysis.**")
     
-    tab1, tab2 = st.tabs(["New Registration", "Existing User"])
+    tab1, tab2 = st.tabs(["Request License Key", "Existing User"])
     
     with tab1:
-        st.subheader("Create Your Account")
-        current_ip = get_remote_ip()
-        if not current_ip:
-            st.warning("Unable to detect your IP address. Registration will proceed without IP restriction, but multiple free accounts may be blocked later. Contact support if issues persist.")
-            st.session_state.error_log.append(f"{datetime.datetime.now()}: IP detection failed during registration")
-        with st.form("registration_form"):
+        st.subheader("Request License Key")
+        mac_address = get_mac_address()
+        records_df = load_records()
+        with st.form("request_form"):
             col1, col2 = st.columns([3, 2])
             with col1:
                 full_name = st.text_input("Full Name", placeholder="John Doe")
                 email = st.text_input("Email Address", placeholder="john@example.com")
                 firecrawl_api_key = st.text_input("Firecrawl API Key", placeholder="fc-...", type="password")
+                bot_name = st.selectbox("Select Bot", ["Select", "Walmart Scraper"], help="Choose the bot to request a license for")
                 selected_plan = st.selectbox("Select Plan", [
                     "Free Plan - 50 URLs/Day (7 Days)",
                     "Basic Plan - 500 URLs/Day (1 Month)",
@@ -774,68 +880,82 @@ if st.session_state.app_state == "auth":
             with col2:
                 registration_date = datetime.datetime.now().strftime("%Y-%m-%d")
                 st.text_input("Registration Date", value=registration_date, disabled=True)
-                st.text_input("Detected IP", value=current_ip or "Not detected", disabled=True, help="Used to prevent multiple free accounts")
+                st.text_input("MAC Address", value=mac_address, disabled=True, help="Unique identifier for this device")
             agree_terms = st.checkbox("I agree to the Terms of Service and Privacy Policy")
-            dont_ask = st.checkbox("Don't ask again on this device", value=True)
-            submitted = st.form_submit_button("Create Account")
+            submitted = st.form_submit_button("Send Request")
             if submitted:
-                with st.spinner("Creating account..."):
-                    if not all([full_name, email, firecrawl_api_key]):
+                with st.spinner("Sending request..."):
+                    if bot_name == "Select":
+                        st.error("Please select a bot to continue.")
+                    elif not all([full_name, email, firecrawl_api_key]):
                         st.error("Please fill in all required fields including Firecrawl API Key.")
                     elif not agree_terms:
                         st.error("You must agree to the Terms of Service.")
                     else:
-                        is_valid, message = validate_new_registration(email, base_plan, current_ip)
+                        is_valid, message = validate_new_request(email, base_plan, mac_address)
                         if not is_valid:
                             st.error(f"{message}")
                         else:
                             try:
+                                # Save request in Firebase
                                 client_data = {
                                     "ClientName": full_name,
                                     "ClientEmail": email,
-                                    "ClientIP": current_ip if current_ip else "",
-                                    "RegistrationDate": registration_date,
+                                    "ClientMacAddress": mac_address,
                                     "Plan": base_plan,
                                     "ToolName": "walmart_scraper",
-                                    "AccessStatus": "ON",
-                                    "DailyUrlCount": 0,
                                     "FirecrawlApiKey": firecrawl_api_key
                                 }
-                                license_key, doc_id = FirebaseFunctions.add_new_client(client_data, current_ip)
-                                if license_key:
-                                    client_data["LicenseKey"] = license_key
-                                    client_data["id"] = doc_id
-                                    st.session_state.user_data = client_data
-                                    st.session_state.license_valid = True
-                                    st.session_state.app_state = "scraping"
-                                    st.session_state.firecrawl_api_key = firecrawl_api_key
-                                    if dont_ask:
-                                        with open(LOCAL_LICENSE_FILE, "w") as f:
-                                            f.write(license_key)
-                                    st.success(f"""
-                                    Account Created Successfully!
-                                    
-                                    **Plan:** {selected_plan}  
-                                    **License Key:** `{license_key}`
-                                    
-                                    Important: Save your license key securely. This license is {'bound to your current IP address' if current_ip else 'not bound to an IP address due to detection issues'}.
-                                    """)
-                                    st.session_state.error_log.append(f"{datetime.datetime.now()}: New account registered - Email: {email}, Plan: {base_plan}, IP: {current_ip or 'None'}")
-                                    st.rerun()
+                                doc_id = FirebaseFunctions.add_request(client_data, mac_address)
+                                if doc_id:
+                                    # Send email to admin
+                                    if send_request_email(full_name, email, bot_name, mac_address):
+                                        # Save MAC address
+                                        save_mac_address()
+                                        # Update local records
+                                        new_record = pd.DataFrame([{
+                                            "Bot Name": bot_name,
+                                            "Sender Name": full_name,
+                                            "Email": email,
+                                            "Time": datetime.datetime.now().strftime("%I:%M %p"),
+                                            "Date": datetime.datetime.now().strftime("%d-%m-%Y"),
+                                            "MAC Address": mac_address,
+                                            "Request Status": "Sent"
+                                        }])
+                                        records_df = pd.concat([records_df, new_record], ignore_index=True)
+                                        save_records(records_df)
+                                        st.success(f"""
+                                        Request sent successfully!
+                                        - Name: {full_name}
+                                        - Email: {email}
+                                        - Bot: {bot_name}
+                                        - Plan: {selected_plan}
+                                        - MAC Address: {mac_address}
+                                        
+                                        You will receive your license key via email after approval.
+                                        """)
+                                        st.session_state.error_log.append(f"{datetime.datetime.now()}: License request sent - Email: {email}, Bot: {bot_name}, Plan: {base_plan}, MAC: {mac_address}")
+                                    else:
+                                        st.error("Failed to send request email. Please try again or contact support.")
+                                        # Delete Firebase entry to avoid orphaned requests
+                                        FirebaseFunctions._firestore_db.collection("licenses").document(doc_id).delete()
                                 else:
-                                    st.error("Failed to create account. Please try again or contact support.")
+                                    st.error("Failed to save request. Please try again or contact support.")
                             except Exception as e:
-                                st.error(f"Account creation failed: {e}")
-                                st.session_state.error_log.append(f"{datetime.datetime.now()}: Account creation error: {e}")
+                                st.error(f"Request failed: {e}")
+                                st.session_state.error_log.append(f"{datetime.datetime.now()}: Request error: {e}")
+        
+        if is_new_pc and not records_df.empty:
+            st.subheader("Previous Requests")
+            st.dataframe(records_df)
+        elif not is_new_pc:
+            st.info("This is a new device. Previous request history is not available.")
     
     with tab2:
         st.subheader("Login to Your Account")
-        current_ip = get_remote_ip()
-        if not current_ip:
-            st.warning("Unable to detect your IP address. Login will proceed, but contact support if you encounter issues.")
-            st.session_state.error_log.append(f"{datetime.datetime.now()}: IP detection failed during login")
         license_key = st.text_input("License Key", type="password", placeholder="Enter your license key")
-        st.text_input("Detected IP", value=current_ip or "Not detected", disabled=True, help="Used for security")
+        current_mac_address = get_mac_address()
+        st.text_input("MAC Address", value=current_mac_address, disabled=True, help="Used for security")
         dont_ask = st.checkbox("Don't ask again on this device")
         if st.button("Validate License"):
             if license_key:
@@ -864,14 +984,257 @@ if st.session_state.app_state == "auth":
                         st.success("License validated successfully!")
                         st.rerun()
                     else:
-                        st.error("Invalid license key or IP address mismatch.")
+                        st.error("Invalid license key or MAC address mismatch. Contact support if you believe this is an error.")
             else:
                 st.error("Please enter your license key.")
     
     st.stop()
 
-# Scraper Interface (unchanged from previous version - add your existing scraping code here)
+# Scraper Interface
 if st.session_state.app_state == "scraping":
     st.sidebar.header("Scraper Settings")
-    # ... (your existing sidebar and scraping code here)
-    pass
+    with st.sidebar.expander("Firecrawl API Settings", expanded=True):
+        current_api_key = st.session_state.firecrawl_api_key
+        new_api_key = st.text_input("Firecrawl API Key", value=current_api_key, type="password", placeholder="fc-...")
+        st.session_state.rate_limit_delay = st.number_input("Rate Limit Delay (seconds)", min_value=0.1, max_value=2.0, value=st.session_state.rate_limit_delay, step=0.1)
+        if st.button("Update API Key"):
+            if new_api_key and new_api_key != current_api_key:
+                try:
+                    doc_ref = FirebaseFunctions._firestore_db.collection("licenses").document(st.session_state.user_data["id"])
+                    doc_ref.update({"FirecrawlApiKey": new_api_key})
+                    st.session_state.firecrawl_api_key = new_api_key
+                    st.success("API Key updated successfully!")
+                except Exception as e:
+                    st.error(f"Error updating API key: {e}")
+                    st.session_state.error_log.append(f"{datetime.datetime.now()}: Error updating API key: {e}")
+
+    fields = [
+        "Product Title", "Brand", "Price", "Availability", "Rating", "Review_count",
+        "Description", "Highlights", "Specifications", "Variants", "Colors",
+        "Sizes", "Seller", "Shipping", "Pickups", "Return_policy",
+        "Images", "Videos", "Category", "Breadcrumbs", "Sourceurl"
+    ]
+    with st.sidebar.expander("Select Data Fields", expanded=True):
+        for dc in fields:
+            checked = st.checkbox(dc, value=dc in st.session_state.selected_fields, key=f"field_{dc}")
+            if checked and dc not in st.session_state.selected_fields:
+                st.session_state.selected_fields.append(dc)
+            elif not checked and dc in st.session_state.selected_fields:
+                st.session_state.selected_fields.remove(dc)
+        st.info("Unselect heavy fields (Images/Videos) for faster scraping.")
+
+    with st.sidebar.expander("Account Info"):
+        st.markdown(f"""
+        **Account:** {st.session_state.user_data.get('ClientName', 'N/A')}  
+        **Valid Until:** {st.session_state.user_data.get('ValidUntil', 'N/A')}  
+        **Credits Used:** {st.session_state.daily_urls_used} / {st.session_state.user_data.get('DailyUrlLimit', 5000)}  
+        **Local Scraped Count:** {st.session_state.local_scraped_count}  
+        **Pending Quota Updates:** {len(st.session_state.pending_quota_updates)}  
+        **MAC Address:** {get_mac_address()}
+        """)
+    
+    if st.sidebar.button("Logout"):
+        if os.path.exists(LOCAL_LICENSE_FILE):
+            os.remove(LOCAL_LICENSE_FILE)
+        st.session_state.app_state = "auth"
+        st.session_state.user_data = None
+        st.session_state.license_valid = False
+        st.session_state.scraped_data = []
+        st.session_state.daily_urls_used = 0
+        st.session_state.local_scraped_count = 0
+        st.session_state.pending_quota_updates = []
+        st.session_state.firecrawl_api_key = ""
+        st.session_state.error_log = []
+        st.rerun()
+
+    st.title("Walmart Product Scraper")
+    st.markdown("**Extract structured product data with ease. Perfect for market research and catalog building.**")
+
+    if not st.session_state.firecrawl_api_key:
+        st.error("Firecrawl API key is required. Please enter it in the sidebar.")
+        st.stop()
+
+    try:
+        firecrawl = Firecrawl(api_key=st.session_state.firecrawl_api_key)
+    except Exception as e:
+        st.error(f"Error initializing scraper: {e}. Please check your Firecrawl API key.")
+        st.session_state.error_log.append(f"{datetime.datetime.now()}: Error initializing Firecrawl: {e}")
+        st.stop()
+
+    st.subheader("Input Product URLs")
+    max_urls = st.session_state.user_data.get("DailyUrlLimit", 5000)
+    daily_urls_used = max(st.session_state.daily_urls_used, st.session_state.local_scraped_count)
+    st.markdown(f'<div class="custom-info">Up to {max_urls} URLs/day (Used: {daily_urls_used}/{max_urls})</div>', unsafe_allow_html=True)
+
+    input_method = st.radio("Input Method:", ("Upload CSV", "Manual Entry"), horizontal=True)
+    urls = []
+    if input_method == "Upload CSV":
+        uploaded_file = st.file_uploader("Upload CSV with URLs", type=["csv"], help="CSV must have a 'url' column")
+        if uploaded_file:
+            with st.spinner("Loading CSV..."):
+                try:
+                    df = pd.read_csv(uploaded_file)
+                    if 'url' in df.columns:
+                        urls = df['url'].dropna().tolist()
+                        if len(urls) > (max_urls - daily_urls_used):
+                            st.error(f"This would exceed the remaining {max_urls - daily_urls_used} URL limit (Daily used: {daily_urls_used}).")
+                            urls = []
+                        else:
+                            st.markdown(f'<div class="custom-info">Successfully loaded {len(urls)} URLs</div>', unsafe_allow_html=True)
+                    else:
+                        st.error("CSV must have a 'url' column")
+                except Exception as e:
+                    st.error(f"Failed to read CSV: {e}")
+                    st.session_state.error_log.append(f"{datetime.datetime.now()}: Error reading CSV: {e}")
+    else:
+        url_text = st.text_area("Enter URLs (one per line)", placeholder="https://www.walmart.com/ip/...", height=150)
+        if url_text:
+            with st.spinner("Processing input..."):
+                try:
+                    urls = [line.strip() for line in url_text.splitlines() if line.strip()]
+                    if len(urls) > (max_urls - daily_urls_used):
+                        st.error(f"This would exceed the remaining {max_urls - daily_urls_used} URL limit (Daily used: {daily_urls_used}).")
+                        urls = []
+                    else:
+                        st.markdown(f'<div class="custom-info">Successfully loaded {len(urls)} URLs</div>', unsafe_allow_html=True)
+                except Exception as e:
+                    st.error(f"Error processing URLs: {e}")
+                    st.session_state.error_log.append(f"{datetime.datetime.now()}: Error processing URLs: {e}")
+
+    if urls:
+        st.write(f"URLs to scrape: {len(urls)} URLs")
+
+    if st.button("Start Scraping", disabled=not urls or st.session_state.scraping_in_progress):
+        st.session_state.scraping_in_progress = True
+        st.session_state.current_scraping_index = 0
+        st.session_state.total_urls = len(urls)
+        st.session_state.scraped_count = 0
+        st.session_state.error_count = 0
+        st.session_state.all_data = []
+        license_key = st.session_state.user_data.get("LicenseKey", "")
+
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        error_container = st.empty()
+
+        for i in range(len(urls)):
+            if not st.session_state.scraping_in_progress:
+                break
+            st.session_state.current_scraping_index = i
+            url = urls[i]
+            status_text.text(f"Scraping URL {i + 1}/{len(urls)}: {url}")
+            try:
+                if st.session_state.local_scraped_count + len(st.session_state.pending_quota_updates) >= max_urls:
+                    st.error(f"Daily URL limit of {max_urls} reached.")
+                    break
+                response = firecrawl.scrape_url(url, params={"pageOptions": {"onlyMainContent": False}})
+                if response.get("success") and response.get("data"):
+                    data = response["data"]
+                    scraped_item = {}
+                    for field in st.session_state.selected_fields:
+                        if field == "Product Title":
+                            scraped_item[field] = data.get("title", "")
+                        elif field == "Brand":
+                            scraped_item[field] = data.get("metadata", {}).get("brand", "")
+                        elif field == "Price":
+                            scraped_item[field] = data.get("metadata", {}).get("price", "")
+                        elif field == "Availability":
+                            scraped_item[field] = data.get("metadata", {}).get("availability", "")
+                        elif field == "Rating":
+                            scraped_item[field] = data.get("metadata", {}).get("rating", "")
+                        elif field == "Review_count":
+                            scraped_item[field] = data.get("metadata", {}).get("reviewCount", "")
+                        elif field == "Description":
+                            scraped_item[field] = data.get("content", "")
+                        elif field == "Highlights":
+                            scraped_item[field] = data.get("metadata", {}).get("highlights", [])
+                        elif field == "Specifications":
+                            scraped_item[field] = data.get("metadata", {}).get("specifications", {})
+                        elif field == "Variants":
+                            scraped_item[field] = data.get("metadata", {}).get("variants", [])
+                        elif field == "Colors":
+                            scraped_item[field] = data.get("metadata", {}).get("colors", [])
+                        elif field == "Sizes":
+                            scraped_item[field] = data.get("metadata", {}).get("sizes", [])
+                        elif field == "Seller":
+                            scraped_item[field] = data.get("metadata", {}).get("seller", "")
+                        elif field == "Shipping":
+                            scraped_item[field] = data.get("metadata", {}).get("shipping", "")
+                        elif field == "Pickups":
+                            scraped_item[field] = data.get("metadata", {}).get("pickups", "")
+                        elif field == "Return_policy":
+                            scraped_item[field] = data.get("metadata", {}).get("returnPolicy", "")
+                        elif field == "Images":
+                            scraped_item[field] = data.get("metadata", {}).get("images", [])
+                        elif field == "Videos":
+                            scraped_item[field] = data.get("metadata", {}).get("videos", [])
+                        elif field == "Category":
+                            scraped_item[field] = data.get("metadata", {}).get("category", "")
+                        elif field == "Breadcrumbs":
+                            scraped_item[field] = data.get("metadata", {}).get("breadcrumbs", [])
+                        elif field == "Sourceurl":
+                            scraped_item[field] = url
+                    st.session_state.all_data.append(scraped_item)
+                    st.session_state.local_scraped_count += 1
+                    st.session_state.scraped_count += 1
+                    st.session_state.pending_quota_updates.append(url)
+                    progress_bar.progress((i + 1) / len(urls))
+                    try:
+                        if FirebaseFunctions.update_client_validation(license_key, 1):
+                            st.session_state.daily_urls_used += 1
+                            st.session_state.pending_quota_updates.pop()
+                        else:
+                            st.warning(f"Failed to update quota for URL {url}. Will retry later.")
+                    except Exception as e:
+                        st.warning(f"Quota update error for {url}: {e}. Will retry later.")
+                        st.session_state.error_log.append(f"{datetime.datetime.now()}: Quota update error for {url}: {e}")
+                    time.sleep(st.session_state.rate_limit_delay)
+                else:
+                    st.session_state.error_count += 1
+                    error_container.error(f"Failed to scrape {url}: {response.get('error', 'Unknown error')}")
+                    st.session_state.error_log.append(f"{datetime.datetime.now()}: Scrape error for {url}: {response.get('error', 'Unknown error')}")
+            except Exception as e:
+                st.session_state.error_count += 1
+                error_container.error(f"Error scraping {url}: {e}")
+                st.session_state.error_log.append(f"{datetime.datetime.now()}: Scrape error for {url}: {e}")
+                time.sleep(st.session_state.rate_limit_delay)
+
+        if st.session_state.pending_quota_updates:
+            try:
+                if FirebaseFunctions.retry_pending_quota_updates(license_key, st.session_state.pending_quota_updates):
+                    st.session_state.daily_urls_used += len(st.session_state.pending_quota_updates)
+                    st.session_state.pending_quota_updates = []
+                    st.success("Successfully synced all pending quota updates.")
+                else:
+                    st.warning("Failed to sync some quota updates. They will be retried on next run.")
+            except Exception as e:
+                st.warning(f"Error syncing pending quota updates: {e}")
+                st.session_state.error_log.append(f"{datetime.datetime.now()}: Error syncing pending quota updates: {e}")
+
+        st.session_state.scraping_in_progress = False
+        status_text.text(f"Scraping complete: {st.session_state.scraped_count} successful, {st.session_state.error_count} failed")
+        progress_bar.empty()
+
+    if st.session_state.all_data:
+        st.subheader("Scraped Data")
+        df = pd.DataFrame(st.session_state.all_data)
+        st.dataframe(df)
+        csv = df.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="Download CSV",
+            data=csv,
+            file_name=f"walmart_scraped_data_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            mime="text/csv"
+        )
+        if st.button("Clear Data"):
+            st.session_state.all_data = []
+            st.session_state.scraped_data = []
+            st.session_state.scraped_count = 0
+            st.session_state.error_count = 0
+            st.session_state.local_scraped_count = 0
+            st.rerun()
+
+    if st.session_state.error_log:
+        with st.expander("Error Log", expanded=False):
+            for log in st.session_state.error_log[-10:]:
+                st.write(log)

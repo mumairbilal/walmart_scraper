@@ -863,9 +863,7 @@ if st.session_state.app_state == "auth":
             agree_terms = st.checkbox("I agree to the Terms of Service and Privacy Policy")
             submitted = st.form_submit_button("Send Request")
             if submitted:
-                if bot_name == "Select":
-                    st.error("Please select a bot to continue.")
-                elif not all([full_name, email, firecrawl_api_key]):
+                if not all([full_name, email, firecrawl_api_key]):
                     st.error("Please fill in all required fields including Firecrawl API Key.")
                 elif not agree_terms:
                     st.error("You must agree to the Terms of Service.")
@@ -886,7 +884,7 @@ if st.session_state.app_state == "auth":
                                 "ClientName": full_name,
                                 "ClientEmail": email,
                                 "Plan": base_plan,
-                                "ToolName": bot_name,
+                                "ToolName": "Walmart Scraper",
                                 "FirecrawlApiKey": firecrawl_api_key,
                                 "DeviceID": device_id
                             }
@@ -895,13 +893,13 @@ if st.session_state.app_state == "auth":
                                 st.error("Failed to save request to database. Please try again.")
                                 st.stop()
                             # Send email to admin
-                            if not send_request_email(full_name, email, bot_name, base_plan):
+                            if not send_request_email(full_name, email, "Walmart Scraper", base_plan):
                                 st.error("Failed to send request email. Please try again or contact support.")
                                 FirebaseFunctions._firestore_db.collection("licenses").document(doc_id).delete()
                                 st.stop()
                             # Update local records
                             new_record = pd.DataFrame([{
-                                "Bot Name": bot_name,
+                                "Bot Name": "Walmart Scraper",
                                 "Sender Name": full_name,
                                 "Email": email,
                                 "Time": datetime.datetime.now().strftime("%I:%M %p"),
@@ -919,12 +917,12 @@ if st.session_state.app_state == "auth":
                     Request sent successfully!
                     - Name: {full_name}
                     - Email: {email}
-                    - Bot: {bot_name}
+                    - Bot: Walmart Scraper
                     - Plan: {selected_plan}
                     
                     You will receive your license key via email after approval.
                     """)
-                    st.session_state.error_log.append(f"{datetime.datetime.now()}: License request sent - Email: {email}, Bot: {bot_name}, Plan: {base_plan}")
+                    st.session_state.error_log.append(f"{datetime.datetime.now()}: License request sent - Email: {email}, Bot: Walmart Scraper, Plan: {base_plan}")
                     st.stop()
         
         if not records_df.empty:
@@ -1225,4 +1223,5 @@ if st.session_state.app_state == "scraping":
         with st.expander("Error Log", expanded=False):
             for log in st.session_state.error_log[-10:]:
                 st.write(log)
+
 

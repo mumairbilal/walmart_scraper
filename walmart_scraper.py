@@ -76,20 +76,52 @@ def save_records(df):
         st.session_state.error_log.append(f"{datetime.datetime.now()}: Error saving records: {e}")
 
 def send_request_email(name, client_email, bot_name, plan):
-    """Send license request email to admin with enhanced retry and error handling."""
-    admin_email = os.getenv("ADMIN_EMAIL", "umisoftbotnotifier@gmail.com")
-    smtp_user = os.getenv("SMTP_USER", "umisoftbotnotifier@gmail.com")
-    smtp_pass = os.getenv("SMTP_PASS")
+    """Send license request email to admin with hardcoded credentials."""
+    admin_email = "umisoftbotnotifier@gmail.com"
+    smtp_user = "umisoftbotnotifier@gmail.com"
+    smtp_pass = "ylor vkis zarh mokt"  # Hardcoded App Password
     smtp_server = "smtp.gmail.com"
     smtp_port = 587
     max_retries = 3
-    base_delay = 2  # Base delay in seconds for exponential backoff
+    base_delay = 2
 
-    # Validate environment variables
-    if not smtp_pass:
-        error_msg = "SMTP_PASS environment variable is not set."
-        st.session_state.error_log.append(f"{datetime.datetime.now()}: {error_msg}")
-        return False
+    # Create email message
+    msg = MIMEMultipart()
+    msg['From'] = smtp_user
+    msg['To'] = admin_email
+    msg['Subject'] = "New Client License Request"
+
+    body = f"""
+    New License Request
+    Name: {name}
+    Email: {client_email}
+    Bot Name: {bot_name}
+    Plan: {plan}
+    """
+    msg.attach(MIMEText(body, 'plain'))  # Use plain text to avoid HTML issues
+
+    for attempt in range(max_retries):
+        try:
+            with smtplib.SMTP(smtp_server, smtp_port, timeout=10) as server:
+                server.starttls()
+                server.login(smtp_user, smtp_pass)
+                server.send_message(msg)
+            st.session_state.error_log.append(f"{datetime.datetime.now()}: Email sent to {admin_email} for {client_email}")
+            return True
+        except smtplib.SMTPAuthenticationError as e:
+            st.session_state.error_log.append(f"{datetime.datetime.now()}: Authentication failed: {e}")
+            return False
+        except smtplib.SMTPException as e:
+            st.session_state.error_log.append(f"{datetime.datetime.now()}: SMTP error: {e}. Retry {attempt + 1}/{max_retries}")
+            if attempt < max_retries - 1:
+                time.sleep(base_delay * (2 ** attempt))
+            continue
+        except Exception as e:
+            st.session_state.error_log.append(f"{datetime.datetime.now()}: Unexpected error: {e}")
+            return False
+
+    st.session_state.error_log.append(f"{datetime.datetime.now()}: Email failed after {max_retries} retries")
+    return False
 
     for attempt in range(max_retries):
         try:
@@ -935,3 +967,4 @@ if st.session_state.app_state == "scraping":
         with st.expander("Error Log", expanded=False):
             for log in st.session_state.error_log[-10:]:
                 st.write(log)
+

@@ -22,11 +22,10 @@ PLAN_LIMITS = {
     "Enterprise": {"daily_limit": 5000, "valid_days": 365}
 }
 
-LOCAL_RECORDS_FILE = "./walmart_scraper_records.csv"  # Changed to current dir for Railway
+LOCAL_RECORDS_FILE = "./walmart_scraper_records.csv"
 LOCAL_DEVICE_ID_FILE = os.path.expanduser("~/.walmart_scraper_device_id")
 
 def hide_file_on_windows(file_path):
-    """Hide the file on Windows using ctypes."""
     try:
         import ctypes
         FILE_ATTRIBUTE_HIDDEN = 0x02
@@ -37,7 +36,6 @@ def hide_file_on_windows(file_path):
         st.session_state.error_log.append(f"{datetime.datetime.now()}: Error hiding file: {e}")
 
 def get_device_id():
-    """Get or generate a unique device ID and store it locally."""
     try:
         if os.path.exists(LOCAL_DEVICE_ID_FILE):
             with open(LOCAL_DEVICE_ID_FILE, "r") as f:
@@ -55,7 +53,6 @@ def get_device_id():
         return None
 
 def load_records():
-    """Load registration records from local CSV."""
     try:
         if os.path.exists(LOCAL_RECORDS_FILE):
             df = pd.read_csv(LOCAL_RECORDS_FILE)
@@ -66,7 +63,6 @@ def load_records():
         return pd.DataFrame(columns=["Bot Name", "Sender Name", "Email", "Time", "Date", "Request Status"])
 
 def save_records(df):
-    """Save registration records to local CSV."""
     try:
         df.to_csv(LOCAL_RECORDS_FILE, index=False)
         if os.name == 'nt':
@@ -75,7 +71,6 @@ def save_records(df):
         st.session_state.error_log.append(f"{datetime.datetime.now()}: Error saving records: {e}")
 
 def send_request_email(name, client_email, bot_name, plan):
-    """Send license request email to admin."""
     admin_email = os.getenv("ADMIN_EMAIL", "umisoftbotnotifier@gmail.com")
     smtp_user = os.getenv("SMTP_USER", "umisoftbotnotifier@gmail.com")
     smtp_pass = os.getenv("SMTP_PASS", "ylor vkis zarh mokt")
@@ -87,49 +82,18 @@ def send_request_email(name, client_email, bot_name, plan):
             msg['From'] = smtp_user
             msg['To'] = admin_email
             msg['Subject'] = "New Client License Request"
-
             body = f"""
             <html>
             <head>
                 <style>
-                    body {{
-                        font-family: Arial, sans-serif;
-                        line-height: 1.6;
-                        color: #333333;
-                    }}
-                    .container {{
-                        max-width: 600px;
-                        margin: 0 auto;
-                        padding: 20px;
-                        border: 1px solid #e0e0e0;
-                        border-radius: 10px;
-                        box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
-                    }}
-                    .header {{
-                        background-color: #f7f7f7;
-                        padding: 10px 20px;
-                        border-bottom: 1px solid #e0e0e0;
-                        text-align: center;
-                    }}
-                    .header h1 {{
-                        margin: 0;
-                        font-size: 24px;
-                        color: #000000;
-                    }}
-                    .content {{
-                        padding: 20px;
-                    }}
-                    .content p {{
-                        margin: 0;
-                    }}
-                    .footer {{
-                        text-align: center;
-                        margin-top: 20px;
-                    }}
-                    .footer p {{
-                        font-size: 12px;
-                        color: #888888;
-                    }}
+                    body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333333; }}
+                    .container {{ max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 10px; box-shadow: 0 0 10px rgba(0, 0, 0, 0.1); }}
+                    .header {{ background-color: #f7f7f7; padding: 10px 20px; border-bottom: 1px solid #e0e0e0; text-align: center; }}
+                    .header h1 {{ margin: 0; font-size: 24px; color: #000000; }}
+                    .content {{ padding: 20px; }}
+                    .content p {{ margin: 0; }}
+                    .footer {{ text-align: center; margin-top: 20px; }}
+                    .footer p {{ font-size: 12px; color: #888888; }}
                 </style>
             </head>
             <body>
@@ -150,7 +114,6 @@ def send_request_email(name, client_email, bot_name, plan):
             </body>
             </html>"""
             msg.attach(MIMEText(body, 'html'))
-
             with smtplib.SMTP('smtp.gmail.com', 587) as server:
                 server.starttls()
                 server.login(smtp_user, smtp_pass)
@@ -194,8 +157,7 @@ class FirebaseFunctions:
                 return client_data
             return None
         except Exception as e:
-            if 'error_log' in st.session_state:
-                st.session_state.error_log.append(f"{datetime.datetime.now()}: Get client by key error: {e}")
+            st.session_state.error_log.append(f"{datetime.datetime.now()}: Get client by key error: {e}")
             return None
     
     @staticmethod
@@ -212,8 +174,7 @@ class FirebaseFunctions:
                 return client_data
             return None
         except Exception as e:
-            if 'error_log' in st.session_state:
-                st.session_state.error_log.append(f"{datetime.datetime.now()}: Get client by email error: {e}")
+            st.session_state.error_log.append(f"{datetime.datetime.now()}: Get client by email error: {e}")
             return None
     
     @staticmethod
@@ -226,15 +187,14 @@ class FirebaseFunctions:
             docs = list(query.stream())
             return len(docs) > 0
         except Exception as e:
-            if 'error_log' in st.session_state:
-                st.session_state.error_log.append(f"{datetime.datetime.now()}: Check existing free account error: {e}")
+            st.session_state.error_log.append(f"{datetime.datetime.now()}: Check existing free account error: {e}")
             return False
     
     @staticmethod
     def is_client_eligible(client_data, expected_bot_name, expected_valid_date, current_device_id):
         if client_data is None:
             return False, "Client data not found."
-        if str(client_data.get("ToolName", "")) != str(expected_bot_name):
+        if str(client_data.get("ToolName", "")).lower() != str(expected_bot_name).lower():
             return False, "Invalid bot name."
         if str(client_data.get("AccessStatus", "")) != "ON":
             return False, "Access is not active."
@@ -254,8 +214,7 @@ class FirebaseFunctions:
             if valid_date is None or valid_date < expected_valid_date:
                 return False, "License has expired."
         except Exception as e:
-            if 'error_log' in st.session_state:
-                st.session_state.error_log.append(f"{datetime.datetime.now()}: Date validation error: {e}")
+            st.session_state.error_log.append(f"{datetime.datetime.now()}: Date validation error: {e}")
             return False, "Invalid license date."
         return True, "Eligible"
 
@@ -271,8 +230,7 @@ class FirebaseFunctions:
             new_doc_ref.set(client_data)
             return new_doc_ref.id
         except Exception as e:
-            if 'error_log' in st.session_state:
-                st.session_state.error_log.append(f"{datetime.datetime.now()}: Add request error: {e}")
+            st.session_state.error_log.append(f"{datetime.datetime.now()}: Add request error: {e}")
             return None
     
     @staticmethod
@@ -294,8 +252,7 @@ class FirebaseFunctions:
                 return True
             return False
         except Exception as e:
-            if 'error_log' in st.session_state:
-                st.session_state.error_log.append(f"{datetime.datetime.now()}: Update validation error: {e}")
+            st.session_state.error_log.append(f"{datetime.datetime.now()}: Update validation error: {e}")
             return False
     
     @staticmethod
@@ -317,8 +274,7 @@ class FirebaseFunctions:
                 return True
             return False
         except Exception as e:
-            if 'error_log' in st.session_state:
-                st.session_state.error_log.append(f"{datetime.datetime.now()}: Retry quota error: {e}")
+            st.session_state.error_log.append(f"{datetime.datetime.now()}: Retry quota error: {e}")
             return False
     
     @staticmethod
@@ -335,8 +291,7 @@ class FirebaseFunctions:
                 return True
             return False
         except Exception as e:
-            if 'error_log' in st.session_state:
-                st.session_state.error_log.append(f"{datetime.datetime.now()}: Reset count error: {e}")
+            st.session_state.error_log.append(f"{datetime.datetime.now()}: Reset count error: {e}")
             return False
     
     @staticmethod
@@ -358,8 +313,7 @@ class FirebaseFunctions:
                 return True
             return False
         except Exception as e:
-            if 'error_log' in st.session_state:
-                st.session_state.error_log.append(f"{datetime.datetime.now()}: Error binding license to device in Firebase: {e}")
+            st.session_state.error_log.append(f"{datetime.datetime.now()}: Error binding license to device in Firebase: {e}")
             return False
 
 def check_license_eligibility(license_key, bot_name):
@@ -372,8 +326,7 @@ def check_license_eligibility(license_key, bot_name):
         is_eligible, message = FirebaseFunctions.is_client_eligible(client_data, bot_name, expected_valid_date, current_device_id)
         return is_eligible, client_data, message
     except Exception as e:
-        if 'error_log' in st.session_state:
-            st.session_state.error_log.append(f"{datetime.datetime.now()}: License check error: {e}")
+        st.session_state.error_log.append(f"{datetime.datetime.now()}: License check error: {e}")
         return False, None, f"License check error: {e}"
 
 def should_reset_daily_count(client_data):
@@ -393,6 +346,58 @@ def validate_new_request(email, plan):
     if plan == "Free" and FirebaseFunctions.has_existing_free_account(email):
         return False, "You already have a free account registered. Please use your existing account or upgrade to a paid plan."
     return True, "OK"
+
+def handle_form_submission(full_name, email, firecrawl_api_key, base_plan):
+    if not all([full_name, email, firecrawl_api_key]):
+        st.error("Please fill in all required fields including Firecrawl API Key.")
+        return False
+    # Validate request
+    is_valid, message = validate_new_request(email, base_plan)
+    if not is_valid:
+        st.error(f"{message}")
+        return False
+    # Save request in Firebase
+    device_id = get_device_id()
+    if not device_id:
+        st.error("Failed to generate device ID. Please try again.")
+        return False
+    client_data = {
+        "ClientName": full_name,
+        "ClientEmail": email,
+        "Plan": base_plan,
+        "ToolName": "Walmart Scraper",
+        "FirecrawlApiKey": firecrawl_api_key,
+        "DeviceID": device_id
+    }
+    doc_id = FirebaseFunctions.add_request(client_data)
+    if not doc_id:
+        st.error("Failed to save request to database. Please try again.")
+        return False
+    # Send email to admin
+    email_sent = send_request_email(full_name, email, "Walmart Scraper", base_plan)
+    if not email_sent:
+        st.error("Failed to send request email. Please try again or contact support.")
+        FirebaseFunctions._firestore_db.collection("licenses").document(doc_id).delete()
+        return False
+    # Update local records in session_state
+    new_record = pd.DataFrame([{
+        "Bot Name": "Walmart Scraper",
+        "Sender Name": full_name,
+        "Email": email,
+        "Time": datetime.datetime.now().strftime("%I:%M %p"),
+        "Date": datetime.datetime.now().strftime("%d-%m-%Y"),
+        "Request Status": "Sent"
+    }])
+    st.session_state.records_df = pd.concat(
+        [st.session_state.records_df, new_record], ignore_index=True
+    )
+    save_records(st.session_state.records_df)
+    return {
+        "full_name": full_name,
+        "email": email,
+        "bot": "Walmart Scraper",
+        "plan": base_plan
+    }
 
 # Initialize Firebase
 try:
@@ -456,382 +461,105 @@ if "records_df" not in st.session_state:
 st.markdown("""
 <style>
     div.stButton > button {
-        border-radius: 8px;
-        padding: 10px 20px;
-        font-weight: bold;
-        transition: background-color 0.3s, border-color 0.3s;
-        border: 1px solid #000000 !important;
-        min-height: 40px !important;
-        white-space: nowrap !important;
-        overflow: hidden !important;
-        text-overflow: ellipsis !important;
+        border-radius: 8px; padding: 10px 20px; font-weight: bold; transition: background-color 0.3s, border-color 0.3s; border: 1px solid #000000 !important; min-height: 40px !important; white-space: nowrap !important; overflow: hidden !important; text-overflow: ellipsis !important;
     }
-    div.stButton > button:hover {
-        border: 1px solid #ffffff !important;
-    }
+    div.stButton > button:hover { border: 1px solid #ffffff !important; }
     div.stTextInput > div > div > input {
-        border-radius: 8px;
-        padding: 10px;
-        border: 1px solid #000000 !important;
-        background-color: #f8f8f8 !important;
-        color: #000000 !important;
+        border-radius: 8px; padding: 10px; border: 1px solid #000000 !important; background-color: #f8f8f8 !important; color: #000000 !important;
     }
-    div.stTextInput > div > div > input::placeholder {
-        color: #666666 !important;
-        opacity: 1;
-    }
+    div.stTextInput > div > div > input::placeholder { color: #666666 !important; opacity: 1; }
     div.stSelectbox > div > div > select {
-        border-radius: 8px;
-        padding: 10px;
-        border: 1px solid #000000 !important;
-        background-color: #f8f8f8 !important;
-        color: #000000 !important;
+        border-radius: 8px; padding: 10px; border: 1px solid #000000 !important; background-color: #f8f8f8 !important; color: #000000 !important;
     }
     div.stDownloadButton > button {
-        border-radius: 8px;
-        padding: 10px 20px;
-        font-weight: bold;
-        transition: background-color 0.3s, border-color 0.3s;
-        border: 1px solid #000000 !important;
-        min-height: 40px !important;
-        white-space: nowrap !important;
-        overflow: hidden !important;
-        text-overflow: ellipsis !important;
+        border-radius: 8px; padding: 10px 20px; font-weight: bold; transition: background-color 0.3s, border-color 0.3s; border: 1px solid #000000 !important; min-height: 40px !important; white-space: nowrap !important; overflow: hidden !important; text-overflow: ellipsis !important;
     }
-    div.stDownloadButton > button:hover {
-        border: 1px solid #ffffff !important;
-    }
+    div.stDownloadButton > button:hover { border: 1px solid #ffffff !important; }
     div[data-testid="stFileUploaderDropzone"] button {
-        border-radius: 8px;
-        padding: 10px 20px;
-        font-weight: bold;
-        transition: background-color 0.3s, border-color 0.3s;
-        border: 1px solid #000000 !important;
-        min-height: 40px !important;
-        white-space: nowrap !important;
-        overflow: hidden !important;
-        text-overflow: ellipsis !important;
+        border-radius: 8px; padding: 10px 20px; font-weight: bold; transition: background-color 0.3s, border-color 0.3s; border: 1px solid #000000 !important; min-height: 40px !important; white-space: nowrap !important; overflow: hidden !important; text-overflow: ellipsis !important;
     }
-    div[data-testid="stFileUploaderDropzone"] button:hover {
-        border: 1px solid #ffffff !important;
-    }
-    section[data-testid="stSidebar"] {
-        padding: 20px;
-        border-right: 1px solid #000000 !important;
-    }
+    div[data-testid="stFileUploaderDropzone"] button:hover { border: 1px solid #ffffff !important; }
+    section[data-testid="stSidebar"] { padding: 20px; border-right: 1px solid #000000 !important; }
     div.stTabs [data-baseweb="tab"] {
-        border-radius: 8px 8px 0 0;
-        padding: 10px 20px;
-        margin: 0 5px;
-        border: 1px solid #000000 !important;
-        border-bottom: none;
+        border-radius: 8px 8px 0 0; padding: 10px 20px; margin: 0 5px; border: 1px solid #000000 !important; border-bottom: none;
     }
-    div.stTabs [data-baseweb="tab"]:hover {
-        background-color: #e0e0e0 !important;
-    }
-    div.stTabs [aria-selected="true"] {
-        background-color: #e0e0e0 !important;
-    }
-    div.stDataFrame {
-        border-radius: 8px;
-        border: 1px solid #000000 !important;
-    }
-    div.stAlert {
-        border-radius: 8px;
-        padding: 15px;
-        border: 1px solid #000000 !important;
-    }
-    div.stExpander {
-        border-radius: 8px;
-        border: 1px solid #000000 !important;
-    }
-    div.stRadio > div {
-        border-radius: 8px;
-        border: 1px solid #000000 !important;
-    }
-    div.stForm {
-        padding: 20px;
-        border-radius: 8px;
-        border: 1px solid #000000 !important;
-    }
-    div.stVideo {
-        max-width: 600px;
-        margin: 0 auto;
-        display: block;
-    }
-    div.element-container {
-        margin-bottom: 5px;
-    }
-    div.stProgress > div > div > div > div {
-        background-color: #000000 !important;
-    }
-    div.stSpinner > div {
-        border-top-color: #000000 !important;
-        border-left-color: #000000 !important;
-    }
-    .custom-info {
-        display: inline-block;
-        padding: 5px 10px;
-        border: 1px solid #000000 !important;
-        border-radius: 5px;
-        font-size: 14px;
-        margin: 5px 0;
-    }
-    .upgrade-info {
-        display: inline-block;
-        padding: 10px;
-        border: 1px solid #000000 !important;
-        border-radius: 5px;
-        font-size: 14px;
-        margin: 10px 0;
-    }
-    .hidden-form {
-        display: none;
-    }
-    .account-info {
-        margin-top: 20px;
-    }
-    .account-info .name {
-        font-weight: bold;
-        cursor: pointer;
-    }
-    .account-info .details {
-        display: none;
-        margin-top: 5px;
-    }
-    .account-info.expanded .details {
-        display: block;
-    }
+    div.stTabs [data-baseweb="tab"]:hover { background-color: #e0e0e0 !important; }
+    div.stTabs [aria-selected="true"] { background-color: #e0e0e0 !important; }
+    div.stDataFrame { border-radius: 8px; border: 1px solid #000000 !important; }
+    div.stAlert { border-radius: 8px; padding: 15px; border: 1px solid #000000 !important; }
+    div.stExpander { border-radius: 8px; border: 1px solid #000000 !important; }
+    div.stRadio > div { border-radius: 8px; border: 1px solid #000000 !important; }
+    div.stForm { padding: 20px; border-radius: 8px; border: 1px solid #000000 !important; }
+    div.stVideo { max-width: 600px; margin: 0 auto; display: block; }
+    div.element-container { margin-bottom: 5px; }
+    div.stProgress > div > div > div > div { background-color: #000000 !important; }
+    div.stSpinner > div { border-top-color: #000000 !important; border-left-color: #000000 !important; }
+    .custom-info { display: inline-block; padding: 5px 10px; border: 1px solid #000000 !important; border-radius: 5px; font-size: 14px; margin: 5px 0; }
+    .upgrade-info { display: inline-block; padding: 10px; border: 1px solid #000000 !important; border-radius: 5px; font-size: 14px; margin: 10px 0; }
+    .hidden-form { display: none; }
+    .account-info { margin-top: 20px; }
+    .account-info .name { font-weight: bold; cursor: pointer; }
+    .account-info .details { display: none; margin-top: 5px; }
+    .account-info.expanded .details { display: block; }
     @media (prefers-color-scheme: dark) {
-        .stApp {
-            background-color: #121212 !important;
-            color: #ffffff !important;
-        }
-        div.stButton > button {
-            background-color: #ffffff !important;
-            color: #000000 !important;
-            border-color: #ffffff !important;
-        }
-        div.stButton > button:hover {
-            background-color: #000000 !important;
-            color: #ffffff !important;
-            border-color: #ffffff !important;
-        }
-        div.stTextInput > div > div > input {
-            background-color: #1E1E1E !important;
-            color: #ffffff !important;
-            border-color: #ffffff !important;
-        }
-        div.stTextInput > div > div > input::placeholder {
-            color: #CCCCCC !important;
-            opacity: 1;
-        }
-        div.stSelectbox > div > div > select {
-            background-color: #1E1E1E !important;
-            color: #ffffff !important;
-            border-color: #ffffff !important;
-        }
-        div.stDownloadButton > button {
-            background-color: #ffffff !important;
-            color: #000000 !important;
-            border-color: #ffffff !important;
-        }
-        div.stDownloadButton > button:hover {
-            background-color: #000000 !important;
-            color: #ffffff !important;
-            border-color: #ffffff !important;
-        }
-        div[data-testid="stFileUploaderDropzone"] button {
-            background-color: #ffffff !important;
-            color: #000000 !important;
-            border-color: #ffffff !important;
-        }
-        div[data-testid="stFileUploaderDropzone"] button:hover {
-            background-color: #000000 !important;
-            color: #ffffff !important;
-            border-color: #ffffff !important;
-        }
-        section[data-testid="stSidebar"] {
-            background-color: #1E1E1E !important;
-            border-right-color: #ffffff !important;
-        }
-        div.stTabs [data-baseweb="tab"] {
-            background-color: #1E1E1E !important;
-            color: #ffffff !important;
-            border-color: #ffffff !important;
-        }
-        div.stTabs [data-baseweb="tab"]:hover {
-            background-color: #333333 !important;
-        }
-        div.stTabs [aria-selected="true"] {
-            background-color: #333333 !important;
-        }
-        div.stDataFrame {
-            background-color: #1E1E1E !important;
-            color: #ffffff !important;
-        }
-        div.stAlert {
-            background-color: #333333 !important;
-            color: #ffffff !important;
-        }
-        div.stExpander {
-            background-color: #1E1E1E !important;
-        }
-        div.stRadio > div {
-            background-color: #1E1E1E !important;
-        }
-        div.stCheckbox > label {
-            color: #ffffff !important;
-        }
-        div.stForm {
-            background-color: #1E1E1E !important;
-        }
-        div.stProgress > div > div > div > div {
-            background-color: #000000 !important;
-        }
-        div.stSpinner > div {
-            border-top-color: #000000 !important;
-            border-left-color: #000000 !important;
-        }
-        .custom-info {
-            background-color: #333333 !important;
-            color: #ffffff !important;
-            border-color: #ffffff !important;
-        }
-        .upgrade-info {
-            background-color: #444444 !important;
-            color: #ffffff !important;
-            border-color: #ffffff !important;
-        }
-        .account-info .name {
-            color: #ffffff !important;
-        }
-        .account-info .details {
-            color: #ffffff !important;
-        }
+        .stApp { background-color: #121212 !important; color: #ffffff !important; }
+        div.stButton > button { background-color: #ffffff !important; color: #000000 !important; border-color: #ffffff !important; }
+        div.stButton > button:hover { background-color: #000000 !important; color: #ffffff !important; border-color: #ffffff !important; }
+        div.stTextInput > div > div > input { background-color: #1E1E1E !important; color: #ffffff !important; border-color: #ffffff !important; }
+        div.stTextInput > div > div > input::placeholder { color: #CCCCCC !important; opacity: 1; }
+        div.stSelectbox > div > div > select { background-color: #1E1E1E !important; color: #ffffff !important; border-color: #ffffff !important; }
+        div.stDownloadButton > button { background-color: #ffffff !important; color: #000000 !important; border-color: #ffffff !important; }
+        div.stDownloadButton > button:hover { background-color: #000000 !important; color: #ffffff !important; border-color: #ffffff !important; }
+        div[data-testid="stFileUploaderDropzone"] button { background-color: #ffffff !important; color: #000000 !important; border-color: #ffffff !important; }
+        div[data-testid="stFileUploaderDropzone"] button:hover { background-color: #000000 !important; color: #ffffff !important; border-color: #ffffff !important; }
+        section[data-testid="stSidebar"] { background-color: #1E1E1E !important; border-right-color: #ffffff !important; }
+        div.stTabs [data-baseweb="tab"] { background-color: #1E1E1E !important; color: #ffffff !important; border-color: #ffffff !important; }
+        div.stTabs [data-baseweb="tab"]:hover { background-color: #333333 !important; }
+        div.stTabs [aria-selected="true"] { background-color: #333333 !important; }
+        div.stDataFrame { background-color: #1E1E1E !important; color: #ffffff !important; }
+        div.stAlert { background-color: #333333 !important; color: #ffffff !important; }
+        div.stExpander { background-color: #1E1E1E !important; }
+        div.stRadio > div { background-color: #1E1E1E !important; }
+        div.stCheckbox > label { color: #ffffff !important; }
+        div.stForm { background-color: #1E1E1E !important; }
+        div.stProgress > div > div > div > div { background-color: #000000 !important; }
+        div.stSpinner > div { border-top-color: #000000 !important; border-left-color: #000000 !important; }
+        .custom-info { background-color: #333333 !important; color: #ffffff !important; border-color: #ffffff !important; }
+        .upgrade-info { background-color: #444444 !important; color: #ffffff !important; border-color: #ffffff !important; }
+        .account-info .name { color: #ffffff !important; }
+        .account-info .details { color: #ffffff !important; }
     }
     @media (prefers-color-scheme: light) {
-        .stApp {
-            background-color: #ffffff !important;
-            color: #000000 !important;
-            padding: 20px !important;
-            max-width: 1200px !important;
-            margin: 0 auto !important;
-        }
-        div.stButton > button {
-            background-color: #000000 !important;
-            color: #ffffff !important;
-            border-color: #000000 !important;
-        }
-        div.stButton > button:hover {
-            background-color: #ffffff !important;
-            color: #000000 !important;
-            border-color: #000000 !important;
-        }
-        div.stTextInput > div > div > input {
-            background-color: #f8f8f8 !important;
-            color: #000000 !important;
-            border-color: #000000 !important;
-        }
-        div.stTextInput > div > div > input::placeholder {
-            color: #666666 !important;
-            opacity: 1;
-        }
-        div.stSelectbox > div > div > select {
-            background-color: #f8f8f8 !important;
-            color: #000000 !important;
-            border-color: #000000 !important;
-        }
-        div.stDownloadButton > button {
-            background-color: #ffffff !important;
-            color: #000000 !important;
-            border-color: #000000 !important;
-        }
-        div.stDownloadButton > button:hover {
-            background-color: #000000 !important;
-            color: #ffffff !important;
-            border-color: #000000 !important;
-        }
-        div[data-testid="stFileUploaderDropzone"] button {
-            background-color: #000000 !important;
-            color: #ffffff !important;
-            border-color: #000000 !important;
-        }
-        div[data-testid="stFileUploaderDropzone"] button:hover {
-            background-color: #ffffff !important;
-            color: #000000 !important;
-            border-color: #000000 !important;
-        }
-        section[data-testid="stSidebar"] {
-            background-color: #f8f8f8 !important;
-            border-right-color: #000000 !important;
-        }
-        div.stTabs [data-baseweb="tab"] {
-            background-color: #f8f8f8 !important;
-            color: #000000 !important;
-            border-color: #000000 !important;
-        }
-        div.stTabs [data-baseweb="tab"]:hover {
-            background-color: #e0e0e0 !important;
-        }
-        div.stTabs [aria-selected="true"] {
-            background-color: #e0e0e0 !important;
-        }
-        div.stDataFrame {
-            background-color: #ffffff !important;
-            color: #000000 !important;
-        }
-        div.stAlert {
-            background-color: #f0f0f0 !important;
-            color: #000000 !important;
-        }
-        div.stExpander {
-            background-color: #f8f8f8 !important;
-        }
-        div.stRadio > div {
-            background-color: #f8f8f8 !important;
-        }
-        div.stCheckbox > label {
-            color: #000000 !important;
-        }
-        div.stForm {
-            background-color: #f8f8f8 !important;
-        }
-        div.stProgress > div > div > div > div {
-            background-color: #000000 !important;
-        }
-        div.stSpinner > div {
-            border-top-color: #000000 !important;
-            border-left-color: #000000 !important;
-        }
-        .custom-info {
-            background-color: #f8f8f8 !important;
-            color: #000000 !important;
-            border-color: #000000 !important;
-        }
-        .upgrade-info {
-            background-color: #f0f0f0 !important;
-            color: #000000 !important;
-            border-color: #000000 !important;
-        }
-        .account-info .name {
-            color: #000000 !important;
-        }
-        .account-info .details {
-            color: #000000 !important;
-        }
+        .stApp { background-color: #ffffff !important; color: #000000 !important; padding: 20px !important; max-width: 1200px !important; margin: 0 auto !important; }
+        div.stButton > button { background-color: #000000 !important; color: #ffffff !important; border-color: #000000 !important; }
+        div.stButton > button:hover { background-color: #ffffff !important; color: #000000 !important; border-color: #000000 !important; }
+        div.stTextInput > div > div > input { background-color: #f8f8f8 !important; color: #000000 !important; border-color: #000000 !important; }
+        div.stTextInput > div > div > input::placeholder { color: #666666 !important; opacity: 1; }
+        div.stSelectbox > div > div > select { background-color: #f8f8f8 !important; color: #000000 !important; border-color: #000000 !important; }
+        div.stDownloadButton > button { background-color: #ffffff !important; color: #000000 !important; border-color: #000000 !important; }
+        div.stDownloadButton > button:hover { background-color: #000000 !important; color: #ffffff !important; border-color: #000000 !important; }
+        div[data-testid="stFileUploaderDropzone"] button { background-color: #000000 !important; color: #ffffff !important; border-color: #000000 !important; }
+        div[data-testid="stFileUploaderDropzone"] button:hover { background-color: #ffffff !important; color: #000000 !important; border-color: #000000 !important; }
+        section[data-testid="stSidebar"] { background-color: #f8f8f8 !important; border-right-color: #000000 !important; }
+        div.stTabs [data-baseweb="tab"] { background-color: #f8f8f8 !important; color: #000000 !important; border-color: #000000 !important; }
+        div.stTabs [data-baseweb="tab"]:hover { background-color: #e0e0e0 !important; }
+        div.stTabs [aria-selected="true"] { background-color: #e0e0e0 !important; }
+        div.stDataFrame { background-color: #ffffff !important; color: #000000 !important; }
+        div.stAlert { background-color: #f0f0f0 !important; color: #000000 !important; }
+        div.stExpander { background-color: #f8f8f8 !important; }
+        div.stRadio > div { background-color: #f8f8f8 !important; }
+        div.stCheckbox > label { color: #000000 !important; }
+        div.stForm { background-color: #f8f8f8 !important; }
+        div.stProgress > div > div > div > div { background-color: #000000 !important; }
+        div.stSpinner > div { border-top-color: #000000 !important; border-left-color: #000000 !important; }
+        .custom-info { background-color: #f8f8f8 !important; color: #000000 !important; border-color: #000000 !important; }
+        .upgrade-info { background-color: #f0f0f0 !important; color: #000000 !important; border-color: #000000 !important; }
+        .account-info .name { color: #000000 !important; }
+        .account-info .details { color: #000000 !important; }
     }
-    div.stProgress {
-        width: 100% !important;
-        margin: 10px 0 !important;
-    }
-    div.stProgress > div {
-        background-color: #333333 !important;
-        border-radius: 8px !important;
-    }
-    div.stProgress > div > div {
-        border-radius: 8px !important;
-    }
+    div.stProgress { width: 100% !important; margin: 10px 0 !important; }
+    div.stProgress > div { background-color: #333333 !important; border-radius: 8px !important; }
+    div.stProgress > div > div { border-radius: 8px !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -843,14 +571,13 @@ if st.session_state.app_state == "auth":
     tab1, tab2 = st.tabs(["Request License Key", "Existing User"])
     with tab1:
         st.subheader("Request License Key")
-
         with st.form("request_form"):
             col1, col2 = st.columns([3, 2])
             with col1:
                 full_name = st.text_input("Full Name", placeholder="John Doe")
                 email = st.text_input("Email Address", placeholder="john@example.com")
                 firecrawl_api_key = st.text_input("Firecrawl API Key", placeholder="fc-...", type="password")
-                bot_name = "Walmart Scraper"  # Hardcode bot name
+                bot_name = "Walmart Scraper"
                 selected_plan = st.selectbox("Select Plan", [
                     "Free Plan - 50 URLs/Day (7 Days)",
                     "Basic Plan - 500 URLs/Day (1 Month)",
@@ -867,76 +594,20 @@ if st.session_state.app_state == "auth":
             submitted = st.form_submit_button("Send Request")
 
             if submitted:
-                if not all([full_name, email, firecrawl_api_key]):
-                    st.error("Please fill in all required fields including Firecrawl API Key.")
-                    return
-                elif not agree_terms:
+                if not agree_terms:
                     st.error("You must agree to the Terms of Service.")
-                    return
                 else:
                     with st.spinner("Processing request..."):
                         try:
-                            # Validate request
-                            is_valid, message = validate_new_request(email, base_plan)
-                            if not is_valid:
-                                st.error(f"{message}")
-                                return
-
-                            # Save request in Firebase
-                            device_id = get_device_id()
-                            if not device_id:
-                                st.error("Failed to generate device ID. Please try again.")
-                                return
-
-                            client_data = {
-                                "ClientName": full_name,
-                                "ClientEmail": email,
-                                "Plan": base_plan,
-                                "ToolName": "Walmart Scraper",
-                                "FirecrawlApiKey": firecrawl_api_key,
-                                "DeviceID": device_id
-                            }
-                            doc_id = FirebaseFunctions.add_request(client_data)
-                            if not doc_id:
-                                st.error("Failed to save request to database. Please try again.")
-                                return
-
-                            # Send email to admin
-                            email_sent = send_request_email(full_name, email, "Walmart Scraper", base_plan)
-                            if not email_sent:
-                                st.error("Failed to send request email. Please try again or contact support.")
-                                FirebaseFunctions._firestore_db.collection("licenses").document(doc_id).delete()
-                                return
-
-                            # Update local records in session_state
-                            new_record = pd.DataFrame([{
-                                "Bot Name": "Walmart Scraper",
-                                "Sender Name": full_name,
-                                "Email": email,
-                                "Time": datetime.datetime.now().strftime("%I:%M %p"),
-                                "Date": datetime.datetime.now().strftime("%d-%m-%Y"),
-                                "Request Status": "Sent"
-                            }])
-                            st.session_state.records_df = pd.concat(
-                                [st.session_state.records_df, new_record], ignore_index=True
-                            )
-                            save_records(st.session_state.records_df)
-
-                            # Store success info
-                            st.session_state.request_processed = {
-                                "full_name": full_name,
-                                "email": email,
-                                "bot": "Walmart Scraper",
-                                "plan": selected_plan
-                            }
-                            st.session_state.spinner_active = False
-                            st.rerun()
-
+                            result = handle_form_submission(full_name, email, firecrawl_api_key, base_plan)
+                            if result:
+                                st.session_state.request_processed = result
+                                st.session_state.spinner_active = False
+                                st.rerun()
                         except Exception as e:
                             st.error(f"Request failed: {e}")
                             st.session_state.error_log.append(f"{datetime.datetime.now()}: Request error: {e}")
                             st.session_state.spinner_active = False
-                            return
 
         # Display success message and DataFrame after rerun
         if st.session_state.request_processed:
@@ -953,7 +624,7 @@ if st.session_state.app_state == "auth":
             st.session_state.error_log.append(
                 f"{datetime.datetime.now()}: License request sent - Email: {info['email']}, Bot: {info['bot']}, Plan: {info['plan']}"
             )
-            st.session_state.request_processed = None  # Clear flag
+            st.session_state.request_processed = None
 
         # Display previous requests
         if not st.session_state.records_df.empty:
@@ -972,28 +643,27 @@ if st.session_state.app_state == "auth":
                             device_id = get_device_id()
                             if not device_id:
                                 st.error("Failed to generate device ID. Please try again.")
-                                return
-                            if not FirebaseFunctions.bind_license_to_device_in_firebase(license_key, device_id):
+                            elif not FirebaseFunctions.bind_license_to_device_in_firebase(license_key, device_id):
                                 st.error("Failed to bind license to device in Firebase. Please try again.")
-                                return
-                            st.session_state.user_data = client_data
-                            st.session_state.license_valid = True
-                            st.session_state.app_state = "scraping"
-                            st.session_state.firecrawl_api_key = client_data.get("FirecrawlApiKey", "")
-                            plan = client_data.get("Plan", "Free").lower()
-                            if any(word in plan for word in ["basic", "premium", "enterprise"]):
-                                st.session_state.user_tier = "premium"
                             else:
-                                st.session_state.user_tier = "free"
-                            st.session_state.daily_urls_used = client_data.get("DailyUrlCount", 0)
-                            st.session_state.local_scraped_count = 0
-                            st.session_state.pending_quota_updates = []
-                            if should_reset_daily_count(client_data):
-                                FirebaseFunctions.reset_daily_url_count(license_key)
-                                st.session_state.daily_urls_used = 0
+                                st.session_state.user_data = client_data
+                                st.session_state.license_valid = True
+                                st.session_state.app_state = "scraping"
+                                st.session_state.firecrawl_api_key = client_data.get("FirecrawlApiKey", "")
+                                plan = client_data.get("Plan", "Free").lower()
+                                if any(word in plan for word in ["basic", "premium", "enterprise"]):
+                                    st.session_state.user_tier = "premium"
+                                else:
+                                    st.session_state.user_tier = "free"
+                                st.session_state.daily_urls_used = client_data.get("DailyUrlCount", 0)
                                 st.session_state.local_scraped_count = 0
-                            st.success("License validated successfully!")
-                            st.rerun()
+                                st.session_state.pending_quota_updates = []
+                                if should_reset_daily_count(client_data):
+                                    FirebaseFunctions.reset_daily_url_count(license_key)
+                                    st.session_state.daily_urls_used = 0
+                                    st.session_state.local_scraped_count = 0
+                                st.success("License validated successfully!")
+                                st.rerun()
                         except Exception as e:
                             st.error(f"Login failed: {e}")
                             st.session_state.error_log.append(f"{datetime.datetime.now()}: Login error: {e}")
@@ -1001,8 +671,6 @@ if st.session_state.app_state == "auth":
                         st.error(f"Login failed: {message}")
             else:
                 st.error("Please enter your license key.")
-    
-    st.stop()
 
 # Scraper Interface
 if st.session_state.app_state == "scraping":

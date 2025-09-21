@@ -844,7 +844,7 @@ with tab1:
     st.subheader("Request License Key")
 
     if "records_df" not in st.session_state:
-        }st.session_state.records_df = load_records()
+        st.session_state.records_df = load_records()
 
     with st.form("request_form"):
         full_name = st.text_input("Full Name", placeholder="John Doe")
@@ -1232,6 +1232,7 @@ if st.session_state.app_state == "scraping":
         with st.expander("Error Log", expanded=False):
             for log in st.session_state.error_log[-10:]:
                 st.write(log)
+
 
 
 

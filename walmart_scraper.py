@@ -76,76 +76,94 @@ def save_records(df):
         st.session_state.error_log.append(f"{datetime.datetime.now()}: Error saving records: {e}")
 
 def send_request_email(name, client_email, bot_name, plan):
-    """Send license request email to admin with hardcoded credentials."""
-    admin_email = "umisoftbotnotifier@gmail.com"
-    smtp_user = "umisoftbotnotifier@gmail.com"
-    smtp_pass = "ylor vkis zarh mokt"  # Hardcoded App Password
-    smtp_server = "smtp.gmail.com"
-    smtp_port = 587
+    """Send license request email to admin."""
+    admin_email = os.getenv("ADMIN_EMAIL", "umisoftbotnotifier@gmail.com")
+    smtp_user = os.getenv("SMTP_USER", "umisoftbotnotifier@gmail.com")
+    smtp_pass = os.getenv("SMTP_PASS", "ylor vkis zarh mokt")
     max_retries = 3
-    base_delay = 2
-
-    # Create email message
-    msg = MIMEMultipart()
-    msg['From'] = smtp_user
-    msg['To'] = admin_email
-    msg['Subject'] = "New Client License Request"
-
-    body = f"""
-    <html>
-    <head>
-        <style>
-            body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333333; }}
-            .container {{ max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 10px; box-shadow: 0 0 10px rgba(0, 0, 0, 0.1); }}
-            .header {{ background-color: #f7f7f7; padding: 10px 20px; border-bottom: 1px solid #e0e0e0; text-align: center; }}
-            .header h1 {{ margin: 0; font-size: 24px; color: #000000; }}
-            .content {{ padding: 20px; }}
-            .content p {{ margin: 0; }}
-            .footer {{ text-align: center; margin-top: 20px; }}
-            .footer p {{ font-size: 12px; color: #888888; }}
-        </style>
-    </head>
-    <body>
-        <div class='container'>
-            <div class='header'>
-                <h1>New Key Request</h1>
-            </div>
-            <div class='content'>
-                <p><strong>Name:</strong> {name}</p><br>
-                <p><strong>Client Email:</strong> <a href='mailto:{client_email}'>{client_email}</a></p><br>
-                <p><strong>Bot Name:</strong> {bot_name}</p><br>
-                <p><strong>Plan:</strong> {plan}</p>
-            </div>
-            <div class='footer'>
-                <p>Thank you for using our bot service. Please process this request.</p>
-            </div>
-        </div>
-    </body>
-    </html>"""
-    msg.attach(MIMEText(body, 'html'))
-
-    for attempt in range(max_retries):
+    retry_count = 0
+    while retry_count < max_retries:
         try:
-            with smtplib.SMTP(smtp_server, smtp_port, timeout=10) as server:
+            msg = MIMEMultipart()
+            msg['From'] = smtp_user
+            msg['To'] = admin_email
+            msg['Subject'] = "New Client License Request"
+
+            body = f"""
+            <html>
+            <head>
+                <style>
+                    body {{
+                        font-family: Arial, sans-serif;
+                        line-height: 1.6;
+                        color: #333333;
+                    }}
+                    .container {{
+                        max-width: 600px;
+                        margin: 0 auto;
+                        padding: 20px;
+                        border: 1px solid #e0e0e0;
+                        border-radius: 10px;
+                        box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+                    }}
+                    .header {{
+                        background-color: #f7f7f7;
+                        padding: 10px 20px;
+                        border-bottom: 1px solid #e0e0e0;
+                        text-align: center;
+                    }}
+                    .header h1 {{
+                        margin: 0;
+                        font-size: 24px;
+                        color: #000000;
+                    }}
+                    .content {{
+                        padding: 20px;
+                    }}
+                    .content p {{
+                        margin: 0;
+                    }}
+                    .footer {{
+                        text-align: center;
+                        margin-top: 20px;
+                    }}
+                    .footer p {{
+                        font-size: 12px;
+                        color: #888888;
+                    }}
+                </style>
+            </head>
+            <body>
+                <div class='container'>
+                    <div class='header'>
+                        <h1>New Key Request</h1>
+                    </div>
+                    <div class='content'>
+                        <p><strong>Name:</strong> {name}</p><br>
+                        <p><strong>Client Email:</strong> <a href='mailto:{client_email}'>{client_email}</a></p><br>
+                        <p><strong>Bot Name:</strong> {bot_name}</p><br>
+                        <p><strong>Plan:</strong> {plan}</p>
+                    </div>
+                    <div class='footer'>
+                        <p>Thank you for using our bot service. Please process this request.</p>
+                    </div>
+                </div>
+            </body>
+            </html>"""
+            msg.attach(MIMEText(body, 'html'))
+
+            with smtplib.SMTP('smtp.gmail.com', 587) as server:
                 server.starttls()
                 server.login(smtp_user, smtp_pass)
                 server.send_message(msg)
-            st.session_state.error_log.append(f"{datetime.datetime.now()}: Email sent to {admin_email} for {client_email}")
             return True
-        except (smtplib.SMTPAuthenticationError, smtplib.SMTPConnectError, smtplib.SMTPServerDisconnected) as e:
-            st.session_state.error_log.append(f"{datetime.datetime.now()}: SMTP error: {e}. Retry {attempt + 1}/{max_retries}")
-            if attempt < max_retries - 1:
-                time.sleep(base_delay * (2 ** attempt))  # Exponential backoff
-            continue
+        except smtplib.SMTPServerDisconnected:
+            retry_count += 1
+            time.sleep(1)
         except Exception as e:
             st.session_state.error_log.append(f"{datetime.datetime.now()}: Email send error: {e}")
             return False
-
     st.session_state.error_log.append(f"{datetime.datetime.now()}: Email send failed after {max_retries} retries")
-    return False
-
-    error_msg = f"Failed to send email after {max_retries} retries."
-    st.session_state.error_log.append(f"{datetime.datetime.now()}: {error_msg}")
     return False
 
 class FirebaseFunctions:
@@ -217,7 +235,7 @@ class FirebaseFunctions:
     def is_client_eligible(client_data, expected_bot_name, expected_valid_date, current_device_id):
         if client_data is None:
             return False, "Client data not found."
-        if str(client_data.get("ToolName", "")) != str(expected_bot_name).lower():
+        if str(client_data.get("ToolName", "")) != str(expected_bot_name):
             return False, "Invalid bot name."
         if str(client_data.get("AccessStatus", "")) != "ON":
             return False, "Access is not active."
@@ -352,7 +370,7 @@ def check_license_eligibility(license_key, bot_name):
         if not current_device_id:
             return False, None, "Failed to generate device ID."
         client_data = FirebaseFunctions.get_client_data_by_license_key(license_key)
-        is_eligible, message = FirebaseFunctions.is_client_eligible(client_data, bot_name.lower(), expected_valid_date, current_device_id)
+        is_eligible, message = FirebaseFunctions.is_client_eligible(client_data, bot_name, expected_valid_date, current_device_id)
         return is_eligible, client_data, message
     except Exception as e:
         if 'error_log' in st.session_state:
@@ -428,8 +446,6 @@ if "pending_quota_updates" not in st.session_state:
     st.session_state.pending_quota_updates = []
 if "rate_limit_delay" not in st.session_state:
     st.session_state.rate_limit_delay = 0.5
-if "spinner_active" not in st.session_state:
-    st.session_state.spinner_active = False
 
 # Load records
 records_df = load_records()
@@ -437,94 +453,383 @@ records_df = load_records()
 # CSS
 st.markdown("""
 <style>
-    div.stButton > button { border-radius: 8px; padding: 10px 20px; font-weight: bold; transition: background-color 0.3s, border-color 0.3s; border: 1px solid #000000 !important; min-height: 40px !important; white-space: nowrap !important; overflow: hidden !important; text-overflow: ellipsis !important; }
-    div.stButton > button:hover { border: 1px solid #ffffff !important; }
-    div.stTextInput > div > div > input { border-radius: 8px; padding: 10px; border: 1px solid #000000 !important; background-color: #f8f8f8 !important; color: #000000 !important; }
-    div.stTextInput > div > div > input::placeholder { color: #666666 !important; opacity: 1; }
-    div.stSelectbox > div > div > select { border-radius: 8px; padding: 10px; border: 1px solid #000000 !important; background-color: #f8f8f8 !important; color: #000000 !important; }
-    div.stDownloadButton > button { border-radius: 8px; padding: 10px 20px; font-weight: bold; transition: background-color 0.3s, border-color 0.3s; border: 1px solid #000000 !important; min-height: 40px !important; white-space: nowrap !important; overflow: hidden !important; text-overflow: ellipsis !important; }
-    div.stDownloadButton > button:hover { border: 1px solid #ffffff !important; }
-    div[data-testid="stFileUploaderDropzone"] button { border-radius: 8px; padding: 10px 20px; font-weight: bold; transition: background-color 0.3s, border-color 0.3s; border: 1px solid #000000 !important; min-height: 40px !important; white-space: nowrap !important; overflow: hidden !important; text-overflow: ellipsis !important; }
-    div[data-testid="stFileUploaderDropzone"] button:hover { border: 1px solid #ffffff !important; }
-    section[data-testid="stSidebar"] { padding: 20px; border-right: 1px solid #000000 !important; }
-    div.stTabs [data-baseweb="tab"] { border-radius: 8px 8px 0 0; padding: 10px 20px; margin: 0 5px; border: 1px solid #000000 !important; border-bottom: none; }
-    div.stTabs [data-baseweb="tab"]:hover { background-color: #e0e0e0 !important; }
-    div.stTabs [aria-selected="true"] { background-color: #e0e0e0 !important; }
-    div.stDataFrame { border-radius: 8px; border: 1px solid #000000 !important; }
-    div.stAlert { border-radius: 8px; padding: 15px; border: 1px solid #000000 !important; }
-    div.stExpander { border-radius: 8px; border: 1px solid #000000 !important; }
-    div.stRadio > div { border-radius: 8px; border: 1px solid #000000 !important; }
-    div.stForm { padding: 20px; border-radius: 8px; border: 1px solid #000000 !important; }
-    div.stVideo { max-width: 600px; margin: 0 auto; display: block; }
-    div.element-container { margin-bottom: 5px; }
-    div.stProgress > div > div > div > div { background-color: #000000 !important; }
-    div.stSpinner > div { border-top-color: #000000 !important; border-left-color: #000000 !important; }
-    .custom-info { display: inline-block; padding: 5px 10px; border: 1px solid #000000 !important; border-radius: 5px; font-size: 14px; margin: 5px 0; }
-    .upgrade-info { display: inline-block; padding: 10px; border: 1px solid #000000 !important; border-radius: 5px; font-size: 14px; margin: 10px 0; }
-    .hidden-form { display: none; }
-    .account-info { margin-top: 20px; }
-    .account-info .name { font-weight: bold; cursor: pointer; }
-    .account-info .details { display: none; margin-top: 5px; }
-    .account-info.expanded .details { display: block; }
+    div.stButton > button {
+        border-radius: 8px;
+        padding: 10px 20px;
+        font-weight: bold;
+        transition: background-color 0.3s, border-color 0.3s;
+        border: 1px solid #000000 !important;
+        min-height: 40px !important;
+        white-space: nowrap !important;
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
+    }
+    div.stButton > button:hover {
+        border: 1px solid #ffffff !important;
+    }
+    div.stTextInput > div > div > input {
+        border-radius: 8px;
+        padding: 10px;
+        border: 1px solid #000000 !important;
+        background-color: #f8f8f8 !important;
+        color: #000000 !important;
+    }
+    div.stTextInput > div > div > input::placeholder {
+        color: #666666 !important;
+        opacity: 1;
+    }
+    div.stSelectbox > div > div > select {
+        border-radius: 8px;
+        padding: 10px;
+        border: 1px solid #000000 !important;
+        background-color: #f8f8f8 !important;
+        color: #000000 !important;
+    }
+    div.stDownloadButton > button {
+        border-radius: 8px;
+        padding: 10px 20px;
+        font-weight: bold;
+        transition: background-color 0.3s, border-color 0.3s;
+        border: 1px solid #000000 !important;
+        min-height: 40px !important;
+        white-space: nowrap !important;
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
+    }
+    div.stDownloadButton > button:hover {
+        border: 1px solid #ffffff !important;
+    }
+    div[data-testid="stFileUploaderDropzone"] button {
+        border-radius: 8px;
+        padding: 10px 20px;
+        font-weight: bold;
+        transition: background-color 0.3s, border-color 0.3s;
+        border: 1px solid #000000 !important;
+        min-height: 40px !important;
+        white-space: nowrap !important;
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
+    }
+    div[data-testid="stFileUploaderDropzone"] button:hover {
+        border: 1px solid #ffffff !important;
+    }
+    section[data-testid="stSidebar"] {
+        padding: 20px;
+        border-right: 1px solid #000000 !important;
+    }
+    div.stTabs [data-baseweb="tab"] {
+        border-radius: 8px 8px 0 0;
+        padding: 10px 20px;
+        margin: 0 5px;
+        border: 1px solid #000000 !important;
+        border-bottom: none;
+    }
+    div.stTabs [data-baseweb="tab"]:hover {
+        background-color: #e0e0e0 !important;
+    }
+    div.stTabs [aria-selected="true"] {
+        background-color: #e0e0e0 !important;
+    }
+    div.stDataFrame {
+        border-radius: 8px;
+        border: 1px solid #000000 !important;
+    }
+    div.stAlert {
+        border-radius: 8px;
+        padding: 15px;
+        border: 1px solid #000000 !important;
+    }
+    div.stExpander {
+        border-radius: 8px;
+        border: 1px solid #000000 !important;
+    }
+    div.stRadio > div {
+        border-radius: 8px;
+        border: 1px solid #000000 !important;
+    }
+    div.stForm {
+        padding: 20px;
+        border-radius: 8px;
+        border: 1px solid #000000 !important;
+    }
+    div.stVideo {
+        max-width: 600px;
+        margin: 0 auto;
+        display: block;
+    }
+    div.element-container {
+        margin-bottom: 5px;
+    }
+    div.stProgress > div > div > div > div {
+        background-color: #000000 !important;
+    }
+    div.stSpinner > div {
+        border-top-color: #000000 !important;
+        border-left-color: #000000 !important;
+    }
+    .custom-info {
+        display: inline-block;
+        padding: 5px 10px;
+        border: 1px solid #000000 !important;
+        border-radius: 5px;
+        font-size: 14px;
+        margin: 5px 0;
+    }
+    .upgrade-info {
+        display: inline-block;
+        padding: 10px;
+        border: 1px solid #000000 !important;
+        border-radius: 5px;
+        font-size: 14px;
+        margin: 10px 0;
+    }
+    .hidden-form {
+        display: none;
+    }
+    .account-info {
+        margin-top: 20px;
+    }
+    .account-info .name {
+        font-weight: bold;
+        cursor: pointer;
+    }
+    .account-info .details {
+        display: none;
+        margin-top: 5px;
+    }
+    .account-info.expanded .details {
+        display: block;
+    }
     @media (prefers-color-scheme: dark) {
-        .stApp { background-color: #121212 !important; color: #ffffff !important; }
-        div.stButton > button { background-color: #ffffff !important; color: #000000 !important; border-color: #ffffff !important; }
-        div.stButton > button:hover { background-color: #000000 !important; color: #ffffff !important; border-color: #ffffff !important; }
-        div.stTextInput > div > div > input { background-color: #1E1E1E !important; color: #ffffff !important; border-color: #ffffff !important; }
-        div.stTextInput > div > div > input::placeholder { color: #CCCCCC !important; opacity: 1; }
-        div.stSelectbox > div > div > select { background-color: #1E1E1E !important; color: #ffffff !important; border-color: #ffffff !important; }
-        div.stDownloadButton > button { background-color: #ffffff !important; color: #000000 !important; border-color: #ffffff !important; }
-        div.stDownloadButton > button:hover { background-color: #000000 !important; color: #ffffff !important; border-color: #ffffff !important; }
-        div[data-testid="stFileUploaderDropzone"] button { background-color: #ffffff !important; color: #000000 !important; border-color: #ffffff !important; }
-        div[data-testid="stFileUploaderDropzone"] button:hover { background-color: #000000 !important; color: #ffffff !important; border-color: #ffffff !important; }
-        section[data-testid="stSidebar"] { background-color: #1E1E1E !important; border-right-color: #ffffff !important; }
-        div.stTabs [data-baseweb="tab"] { background-color: #1E1E1E !important; color: #ffffff !important; border-color: #ffffff !important; }
-        div.stTabs [data-baseweb="tab"]:hover { background-color: #333333 !important; }
-        div.stTabs [aria-selected="true"] { background-color: #333333 !important; }
-        div.stDataFrame { background-color: #1E1E1E !important; color: #ffffff !important; }
-        div.stAlert { background-color: #333333 !important; color: #ffffff !important; }
-        div.stExpander { background-color: #1E1E1E !important; }
-        div.stRadio > div { background-color: #1E1E1E !important; }
-        div.stCheckbox > label { color: #ffffff !important; }
-        div.stForm { background-color: #1E1E1E !important; }
-        div.stProgress > div > div > div > div { background-color: #000000 !important; }
-        div.stSpinner > div { border-top-color: #000000 !important; border-left-color: #000000 !important; }
-        .custom-info { background-color: #333333 !important; color: #ffffff !important; border-color: #ffffff !important; }
-        .upgrade-info { background-color: #444444 !important; color: #ffffff !important; border-color: #ffffff !important; }
-        .account-info .name { color: #ffffff !important; }
-        .account-info .details { color: #ffffff !important; }
+        .stApp {
+            background-color: #121212 !important;
+            color: #ffffff !important;
+        }
+        div.stButton > button {
+            background-color: #ffffff !important;
+            color: #000000 !important;
+            border-color: #ffffff !important;
+        }
+        div.stButton > button:hover {
+            background-color: #000000 !important;
+            color: #ffffff !important;
+            border-color: #ffffff !important;
+        }
+        div.stTextInput > div > div > input {
+            background-color: #1E1E1E !important;
+            color: #ffffff !important;
+            border-color: #ffffff !important;
+        }
+        div.stTextInput > div > div > input::placeholder {
+            color: #CCCCCC !important;
+            opacity: 1;
+        }
+        div.stSelectbox > div > div > select {
+            background-color: #1E1E1E !important;
+            color: #ffffff !important;
+            border-color: #ffffff !important;
+        }
+        div.stDownloadButton > button {
+            background-color: #ffffff !important;
+            color: #000000 !important;
+            border-color: #ffffff !important;
+        }
+        div.stDownloadButton > button:hover {
+            background-color: #000000 !important;
+            color: #ffffff !important;
+            border-color: #ffffff !important;
+        }
+        div[data-testid="stFileUploaderDropzone"] button {
+            background-color: #ffffff !important;
+            color: #000000 !important;
+            border-color: #ffffff !important;
+        }
+        div[data-testid="stFileUploaderDropzone"] button:hover {
+            background-color: #000000 !important;
+            color: #ffffff !important;
+            border-color: #ffffff !important;
+        }
+        section[data-testid="stSidebar"] {
+            background-color: #1E1E1E !important;
+            border-right-color: #ffffff !important;
+        }
+        div.stTabs [data-baseweb="tab"] {
+            background-color: #1E1E1E !important;
+            color: #ffffff !important;
+            border-color: #ffffff !important;
+        }
+        div.stTabs [data-baseweb="tab"]:hover {
+            background-color: #333333 !important;
+        }
+        div.stTabs [aria-selected="true"] {
+            background-color: #333333 !important;
+        }
+        div.stDataFrame {
+            background-color: #1E1E1E !important;
+            color: #ffffff !important;
+        }
+        div.stAlert {
+            background-color: #333333 !important;
+            color: #ffffff !important;
+        }
+        div.stExpander {
+            background-color: #1E1E1E !important;
+        }
+        div.stRadio > div {
+            background-color: #1E1E1E !important;
+        }
+        div.stCheckbox > label {
+            color: #ffffff !important;
+        }
+        div.stForm {
+            background-color: #1E1E1E !important;
+        }
+        div.stProgress > div > div > div > div {
+            background-color: #000000 !important;
+        }
+        div.stSpinner > div {
+            border-top-color: #000000 !important;
+            border-left-color: #000000 !important;
+        }
+        .custom-info {
+            background-color: #333333 !important;
+            color: #ffffff !important;
+            border-color: #ffffff !important;
+        }
+        .upgrade-info {
+            background-color: #444444 !important;
+            color: #ffffff !important;
+            border-color: #ffffff !important;
+        }
+        .account-info .name {
+            color: #ffffff !important;
+        }
+        .account-info .details {
+            color: #ffffff !important;
+        }
     }
     @media (prefers-color-scheme: light) {
-        .stApp { background-color: #ffffff !important; color: #000000 !important; padding: 20px !important; max-width: 1200px !important; margin: 0 auto !important; }
-        div.stButton > button { background-color: #000000 !important; color: #ffffff !important; border-color: #000000 !important; }
-        div.stButton > button:hover { background-color: #ffffff !important; color: #000000 !important; border-color: #000000 !important; }
-        div.stTextInput > div > div > input { background-color: #f8f8f8 !important; color: #000000 !important; border-color: #000000 !important; }
-        div.stTextInput > div > div > input::placeholder { color: #666666 !important; opacity: 1; }
-        div.stSelectbox > div > div > select { background-color: #f8f8f8 !important; color: #000000 !important; border-color: #000000 !important; }
-        div.stDownloadButton > button { background-color: #ffffff !important; color: #000000 !important; border-color: #000000 !important; }
-        div.stDownloadButton > button:hover { background-color: #000000 !important; color: #ffffff !important; border-color: #000000 !important; }
-        div[data-testid="stFileUploaderDropzone"] button { background-color: #000000 !important; color: #ffffff !important; border-color: #000000 !important; }
-        div[data-testid="stFileUploaderDropzone"] button:hover { background-color: #ffffff !important; color: #000000 !important; border-color: #000000 !important; }
-        section[data-testid="stSidebar"] { background-color: #f8f8f8 !important; border-right-color: #000000 !important; }
-        div.stTabs [data-baseweb="tab"] { background-color: #f8f8f8 !important; color: #000000 !important; border-color: #000000 !important; }
-        div.stTabs [data-baseweb="tab"]:hover { background-color: #e0e0e0 !important; }
-        div.stTabs [aria-selected="true"] { background-color: #e0e0e0 !important; }
-        div.stDataFrame { background-color: #ffffff !important; color: #000000 !important; }
-        div.stAlert { background-color: #f0f0f0 !important; color: #000000 !important; }
-        div.stExpander { background-color: #f8f8f8 !important; }
-        div.stRadio > div { background-color: #f8f8f8 !important; }
-        div.stCheckbox > label { color: #000000 !important; }
-        div.stForm { background-color: #f8f8f8 !important; }
-        div.stProgress > div > div > div > div { background-color: #000000 !important; }
-        div.stSpinner > div { border-top-color: #000000 !important; border-left-color: #000000 !important; }
-        .custom-info { background-color: #f8f8f8 !important; color: #000000 !important; border-color: #000000 !important; }
-        .upgrade-info { background-color: #f0f0f0 !important; color: #000000 !important; border-color: #000000 !important; }
-        .account-info .name { color: #000000 !important; }
-        .account-info .details { color: #000000 !important; }
+        .stApp {
+            background-color: #ffffff !important;
+            color: #000000 !important;
+            padding: 20px !important;
+            max-width: 1200px !important;
+            margin: 0 auto !important;
+        }
+        div.stButton > button {
+            background-color: #000000 !important;
+            color: #ffffff !important;
+            border-color: #000000 !important;
+        }
+        div.stButton > button:hover {
+            background-color: #ffffff !important;
+            color: #000000 !important;
+            border-color: #000000 !important;
+        }
+        div.stTextInput > div > div > input {
+            background-color: #f8f8f8 !important;
+            color: #000000 !important;
+            border-color: #000000 !important;
+        }
+        div.stTextInput > div > div > input::placeholder {
+            color: #666666 !important;
+            opacity: 1;
+        }
+        div.stSelectbox > div > div > select {
+            background-color: #f8f8f8 !important;
+            color: #000000 !important;
+            border-color: #000000 !important;
+        }
+        div.stDownloadButton > button {
+            background-color: #ffffff !important;
+            color: #000000 !important;
+            border-color: #000000 !important;
+        }
+        div.stDownloadButton > button:hover {
+            background-color: #000000 !important;
+            color: #ffffff !important;
+            border-color: #000000 !important;
+        }
+        div[data-testid="stFileUploaderDropzone"] button {
+            background-color: #000000 !important;
+            color: #ffffff !important;
+            border-color: #000000 !important;
+        }
+        div[data-testid="stFileUploaderDropzone"] button:hover {
+            background-color: #ffffff !important;
+            color: #000000 !important;
+            border-color: #000000 !important;
+        }
+        section[data-testid="stSidebar"] {
+            background-color: #f8f8f8 !important;
+            border-right-color: #000000 !important;
+        }
+        div.stTabs [data-baseweb="tab"] {
+            background-color: #f8f8f8 !important;
+            color: #000000 !important;
+            border-color: #000000 !important;
+        }
+        div.stTabs [data-baseweb="tab"]:hover {
+            background-color: #e0e0e0 !important;
+        }
+        div.stTabs [aria-selected="true"] {
+            background-color: #e0e0e0 !important;
+        }
+        div.stDataFrame {
+            background-color: #ffffff !important;
+            color: #000000 !important;
+        }
+        div.stAlert {
+            background-color: #f0f0f0 !important;
+            color: #000000 !important;
+        }
+        div.stExpander {
+            background-color: #f8f8f8 !important;
+        }
+        div.stRadio > div {
+            background-color: #f8f8f8 !important;
+        }
+        div.stCheckbox > label {
+            color: #000000 !important;
+        }
+        div.stForm {
+            background-color: #f8f8f8 !important;
+        }
+        div.stProgress > div > div > div > div {
+            background-color: #000000 !important;
+        }
+        div.stSpinner > div {
+            border-top-color: #000000 !important;
+            border-left-color: #000000 !important;
+        }
+        .custom-info {
+            background-color: #f8f8f8 !important;
+            color: #000000 !important;
+            border-color: #000000 !important;
+        }
+        .upgrade-info {
+            background-color: #f0f0f0 !important;
+            color: #000000 !important;
+            border-color: #000000 !important;
+        }
+        .account-info .name {
+            color: #000000 !important;
+        }
+        .account-info .details {
+            color: #000000 !important;
+        }
     }
-    div.stProgress { width: 100% !important; margin: 10px 0 !important; }
-    div.stProgress > div { background-color: #333333 !important; border-radius: 8px !important; }
-    div.stProgress > div > div { border-radius: 8px !important; }
+    div.stProgress {
+        width: 100% !important;
+        margin: 10px 0 !important;
+    }
+    div.stProgress > div {
+        background-color: #333333 !important;
+        border-radius: 8px !important;
+    }
+    div.stProgress > div > div {
+        border-radius: 8px !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -544,7 +849,7 @@ if st.session_state.app_state == "auth":
                 full_name = st.text_input("Full Name", placeholder="John Doe")
                 email = st.text_input("Email Address", placeholder="john@example.com")
                 firecrawl_api_key = st.text_input("Firecrawl API Key", placeholder="fc-...", type="password")
-                bot_name = "walmart_scraper"  # Hardcode bot name in lowercase
+                bot_name = "Walmart Scraper"  # Hardcode bot name
                 selected_plan = st.selectbox("Select Plan", [
                     "Free Plan - 50 URLs/Day (7 Days)",
                     "Basic Plan - 500 URLs/Day (1 Month)",
@@ -579,7 +884,7 @@ if st.session_state.app_state == "auth":
                                 "ClientName": full_name,
                                 "ClientEmail": email,
                                 "Plan": base_plan,
-                                "ToolName": "walmart_scraper",
+                                "ToolName": "Walmart Scraper",
                                 "FirecrawlApiKey": firecrawl_api_key,
                                 "DeviceID": device_id
                             }
@@ -604,12 +909,14 @@ if st.session_state.app_state == "auth":
                             }])
                             records_df = pd.concat([records_df, new_record], ignore_index=True)
                             save_records(records_df)
-                            st.session_state.error_log.append(f"{datetime.datetime.now()}: Local records updated for {email}")
                         except Exception as e:
                             st.error(f"Request failed: {e}")
                             st.session_state.error_log.append(f"{datetime.datetime.now()}: Request error: {e}")
-                            st.stop()
-                    # Display success message outside spinner
+                    
+                    # Explicitly stop spinner and update UI
+                    st.session_state.spinner_active = False  # Custom flag to track spinner state
+                    st.rerun()  # Force UI update to clear spinner
+                    # Display success message
                     st.success(f"""
                     Request sent successfully!
                     - Name: {full_name}
@@ -621,7 +928,6 @@ if st.session_state.app_state == "auth":
                     """)
                     st.session_state.error_log.append(f"{datetime.datetime.now()}: License request sent - Email: {email}, Bot: Walmart Scraper, Plan: {base_plan}")
                     st.stop()
-        
         if not records_df.empty:
             st.subheader("Previous Requests")
             st.dataframe(records_df)
@@ -920,5 +1226,3 @@ if st.session_state.app_state == "scraping":
         with st.expander("Error Log", expanded=False):
             for log in st.session_state.error_log[-10:]:
                 st.write(log)
-
-

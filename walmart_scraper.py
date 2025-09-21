@@ -840,10 +840,6 @@ if st.session_state.app_state == "auth":
     
     tab1, tab2 = st.tabs(["Request License Key", "Existing User"])
 
-tab1, tab2 = st.tabs(["Request License Key", "Existing User"])
-
-tab1, tab2 = st.tabs(["Request License Key", "Existing User"])
-
 with tab1:
     st.subheader("Request License Key")
 
@@ -1257,6 +1253,7 @@ if st.session_state.app_state == "scraping":
         with st.expander("Error Log", expanded=False):
             for log in st.session_state.error_log[-10:]:
                 st.write(log)
+
 
 
 

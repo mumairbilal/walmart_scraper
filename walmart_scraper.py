@@ -597,33 +597,24 @@ if st.session_state.app_state == "auth":
                         try:
                             result = handle_form_submission(full_name, email, firecrawl_api_key, base_plan)
                             if result:
-                                st.session_state.request_processed = result
-                                st.session_state.spinner_active = False
-                                st.rerun()
+                                #st.rerun()
+                                st.success(f"""
+                                Request sent successfully!
+                                - Name: {info['full_name']}
+                                - Email: {info['email']}
+                                - Bot: {info['bot']}
+                                - Plan: {info['plan']}
+                                if not st.session_state.records_df.empty:
+                                st.subheader("Previous Requests")
+                                st.dataframe(st.session_state.records_df)
                         except Exception as e:
                             st.error(f"Request failed: {e}")
                             st.session_state.error_log.append(f"{datetime.datetime.now()}: Request error: {e}")
                             st.session_state.spinner_active = False
 
-        if st.session_state.request_processed:
-            info = st.session_state.request_processed
-            st.success(f"""
-            Request sent successfully!
-            - Name: {info['full_name']}
-            - Email: {info['email']}
-            - Bot: {info['bot']}
-            - Plan: {info['plan']}
-            
-            You will receive your license key via email after approval.
-            """)
-            st.session_state.error_log.append(
-                f"{datetime.datetime.now()}: License request sent - Email: {info['email']}, Bot: {info['bot']}, Plan: {info['plan']}"
-            )
-            st.session_state.request_processed = None
+        
 
-        if not st.session_state.records_df.empty:
-            st.subheader("Previous Requests")
-            st.dataframe(st.session_state.records_df)
+        
 
     with tab2:
         st.subheader("Login to Your Account")
@@ -916,3 +907,4 @@ if st.session_state.app_state == "scraping":
         with st.expander("Error Log", expanded=False):
             for log in st.session_state.error_log[-10:]:
                 st.write(log)
+

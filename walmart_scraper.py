@@ -840,10 +840,12 @@ if st.session_state.app_state == "auth":
     
     tab1, tab2 = st.tabs(["Request License Key", "Existing User"])
 
+tab1, tab2 = st.tabs(["Request License Key", "Existing User"])
+
 with tab1:
     st.subheader("Request License Key")
 
-    # Load records directly from Firestore
+    # ✅ Load records from Firestore at startup
     def load_records_from_db():
         try:
             query = FirebaseFunctions._firestore_db.collection("licenses").stream()
@@ -858,10 +860,15 @@ with tab1:
                     "Date": data.get("Date", ""),
                     "Request Status": "Sent"
                 })
-            return pd.DataFrame(records, columns=["Bot Name", "Sender Name", "Email", "Time", "Date", "Request Status"])
+            return pd.DataFrame(
+                records,
+                columns=["Bot Name", "Sender Name", "Email", "Time", "Date", "Request Status"]
+            )
         except Exception as e:
             st.error(f"Error loading records: {e}")
-            return pd.DataFrame(columns=["Bot Name", "Sender Name", "Email", "Time", "Date", "Request Status"])
+            return pd.DataFrame(
+                columns=["Bot Name", "Sender Name", "Email", "Time", "Date", "Request Status"]
+            )
 
     if "records_df" not in st.session_state:
         st.session_state.records_df = load_records_from_db()
@@ -871,14 +878,19 @@ with tab1:
         with col1:
             full_name = st.text_input("Full Name", placeholder="John Doe")
             email = st.text_input("Email Address", placeholder="john@example.com")
-            firecrawl_api_key = st.text_input("Firecrawl API Key", placeholder="fc-...", type="password")
+            firecrawl_api_key = st.text_input(
+                "Firecrawl API Key", placeholder="fc-...", type="password"
+            )
             bot_name = "Walmart Scraper"
-            selected_plan = st.selectbox("Select Plan", [
-                "Free Plan - 50 URLs/Day (7 Days)",
-                "Basic Plan - 500 URLs/Day (1 Month)",
-                "Premium Plan - 2,500 URLs/Day (3 Months)",
-                "Enterprise Plan - 5,000 URLs/Day (1 Year)"
-            ])
+            selected_plan = st.selectbox(
+                "Select Plan",
+                [
+                    "Free Plan - 50 URLs/Day (7 Days)",
+                    "Basic Plan - 500 URLs/Day (1 Month)",
+                    "Premium Plan - 2,500 URLs/Day (3 Months)",
+                    "Enterprise Plan - 5,000 URLs/Day (1 Year)"
+                ]
+            )
             base_plan = selected_plan.split(" - ")[0].replace(" Plan", "")
 
         with col2:
@@ -914,9 +926,9 @@ with tab1:
                             "Time": datetime.datetime.now().strftime("%I:%M %p"),
                             "Date": datetime.datetime.now().strftime("%d-%m-%Y")
                         }
-                        doc_id = FirebaseFunctions.add_request(client_data)
+                        FirebaseFunctions.add_request(client_data)
 
-                        # email admin
+                        # send email
                         send_request_email(full_name, email, bot_name, base_plan)
 
                         # update session DataFrame immediately
@@ -939,12 +951,11 @@ with tab1:
                             "bot": bot_name,
                             "plan": selected_plan
                         }
-                        st.rerun()
 
                     except Exception as e:
                         st.error(f"Request failed: {e}")
 
-    # ✅ Show success after rerun
+    # ✅ Show success message
     if "request_success" in st.session_state and st.session_state.request_success:
         info = st.session_state.request_success
         st.success(f"""
@@ -956,11 +967,15 @@ with tab1:
         
         You will receive your license key via email after approval.
         """)
-        st.session_state.request_success = None
+        st.session_state.request_success = None  # clear after showing
 
-    # ✅ Always show previous requests from Firestore
+    # ✅ Show DataFrame (always latest from session)
     st.subheader("Previous Requests")
-    st.dataframe(st.session_state.records_df)
+    if not st.session_state.records_df.empty:
+        st.dataframe(st.session_state.records_df)
+    else:
+        st.info("No requests yet.")
+
 
 
 
@@ -1259,4 +1274,5 @@ if st.session_state.app_state == "scraping":
         with st.expander("Error Log", expanded=False):
             for log in st.session_state.error_log[-10:]:
                 st.write(log)
+
 
